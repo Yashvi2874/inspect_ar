@@ -1,0 +1,7 @@
+{
+  "name": "zenith-inspect-backend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Backend for ZENITH INSPECT-AR industrial measurement system",
+  "type": "module"
+}
