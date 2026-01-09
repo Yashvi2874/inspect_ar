@@ -1,4 +1,5 @@
-# inspect_ar
+# INSPECT-AR 
+"From Manual Inspection to AI inspector"
 # AI-Powered Industrial Object Inspection
 ## Computer Vision & Machine Learning Challenge
 In manufacturing industries, quality control is often performed manually, making the process time-consuming, error-prone, and inconsistent. There is a growing need for an intelligent, real-time inspection system that can automatically detect defects and measure object dimensions without human intervention.
