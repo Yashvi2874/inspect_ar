@@ -67,6 +67,10 @@ class YOLODetector:
                     confidence = float(box.conf[0].cpu().numpy())
                     class_id = int(box.cls[0].cpu().numpy())
                     
+                    # Ignore humans
+                    if self.model.names[class_id] == "person":
+                        continue
+                    
                     # Calculate area
                     area = (x2 - x1) * (y2 - y1)
                     
