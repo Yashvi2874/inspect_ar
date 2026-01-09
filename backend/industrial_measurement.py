@@ -22,10 +22,24 @@ ARUCO_DICTS = {
     "DICT_6X6_250": cv2.aruco.DICT_6X6_250,
 }
 
-# Get marker size and dictionary
-print("Enter marker size in mm (default: 50mm): ", end="")
-marker_input = input().strip()
-KNOWN_MARKER_SIZE_MM = float(marker_input) if marker_input else 50.0
+# Available marker sizes
+MARKER_SIZES = [50, 40, 30]  # mm
+
+# Print available marker sizes
+print("Available ArUco marker sizes:")
+for i, size in enumerate(MARKER_SIZES, 1):
+    print(f"  {i}. {size}x{size}mm")
+
+# Get marker size from user
+print("\nEnter marker size (1-3, default: 1 for 50x50mm): ", end="")
+size_input = input().strip()
+size_choice = int(size_input) if size_input.isdigit() and 1 <= int(size_input) <= len(MARKER_SIZES) else 1
+KNOWN_MARKER_SIZE_MM = MARKER_SIZES[size_choice - 1]
+
+# Print available dictionaries
+print("\nAvailable ArUco dictionaries:")
+for i, (name, _) in enumerate(ARUCO_DICTS.items(), 1):
+    print(f"  {i}. {name}")
 
 print("Select ArUco Dictionary (1-3, default: 3): ", end="")
 dict_input = input().strip()
@@ -252,8 +266,8 @@ def measure_object_with_rotation(contour, pixel_to_mm_ratio):
         width_px, height_px = height_px, width_px
         angle = angle + 90
     
-    width_mm = (width_px * pixel_to_mm_ratio) - 0.1 ####################
-    height_mm = (height_px * pixel_to_mm_ratio) - 0.1 ###########################
+    width_mm = (width_px * pixel_to_mm_ratio) - 10 ####################
+    height_mm = (height_px * pixel_to_mm_ratio) - 10 ###########################
     area_px = cv2.contourArea(contour)
     area_mm2 = area_px * (pixel_to_mm_ratio ** 2)
     perimeter_px = cv2.arcLength(contour, closed=True)
@@ -503,6 +517,8 @@ def apply_advanced_smoothing(object_id, current_measurements):
     return smoothed
 
 # Initialize webcam
+print(f"Selected marker size: {KNOWN_MARKER_SIZE_MM}x{KNOWN_MARKER_SIZE_MM}mm")
+print(f"Selected dictionary: {dict_name}")
 print("Initializing webcam...")
 cap = cv2.VideoCapture(0)
 
