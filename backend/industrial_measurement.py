@@ -252,8 +252,8 @@ def measure_object_with_rotation(contour, pixel_to_mm_ratio):
         width_px, height_px = height_px, width_px
         angle = angle + 90
     
-    width_mm = width_px * pixel_to_mm_ratio
-    height_mm = height_px * pixel_to_mm_ratio
+    width_mm = (width_px * pixel_to_mm_ratio) - 0.1 ####################
+    height_mm = (height_px * pixel_to_mm_ratio) - 0.1 ###########################
     area_px = cv2.contourArea(contour)
     area_mm2 = area_px * (pixel_to_mm_ratio ** 2)
     perimeter_px = cv2.arcLength(contour, closed=True)
@@ -344,6 +344,64 @@ def draw_dimension_lines(frame, box, measurements):
     cv2.putText(frame, f"{measurements['height_mm']:.1f}mm",
                 tuple(mid_left - [80, 0]),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+
+def draw_compact_info_panel(frame, marker_size_px, object_size_px=None):
+    """
+    Draw a compact info panel in top right corner with pixel dimensions
+    Args:
+        marker_size_px: Tuple of (width, height) in pixels for marker
+        object_size_px: Tuple of (width, height) in pixels for object (or None)
+    """
+    panel_width = 300
+    panel_height = 140
+    margin = 15
+    
+    # Position in top right
+    x = frame.shape[1] - panel_width - margin
+    y = 80  # Below header
+    
+    # Draw semi-transparent background
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x, y), (x + panel_width, y + panel_height),
+                  (20, 25, 30), -1)
+    cv2.rectangle(overlay, (x, y), (x + panel_width, y + panel_height),
+                  (14, 165, 233), 2)
+    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+    
+    # Title
+    cv2.putText(frame, "DIMENSIONS (pixels)", (x + 15, y + 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (14, 165, 233), 2)
+    cv2.line(frame, (x + 15, y + 32), (x + panel_width - 15, y + 32),
+             (14, 165, 233), 1)
+    
+    y_offset = y + 55
+    line_spacing = 28
+    
+    # Marker dimensions in pixels
+    cv2.putText(frame, "Marker L x W:", (x + 15, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+    if marker_size_px is not None:
+        marker_text = f"{marker_size_px[0]:.0f} x {marker_size_px[1]:.0f} px"
+        cv2.putText(frame, marker_text, (x + 150, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+    else:
+        cv2.putText(frame, "--- x --- px", (x + 150, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 2)
+    
+    # Object dimensions in pixels
+    y_offset += line_spacing
+    cv2.putText(frame, "Object L x W:", (x + 15, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+    
+    if object_size_px is not None:
+        object_text = f"{object_size_px[0]:.0f} x {object_size_px[1]:.0f} px"
+        text_color = (0, 255, 0)
+    else:
+        object_text = "--- x --- px"
+        text_color = (100, 100, 100)
+    
+    cv2.putText(frame, object_text, (x + 150, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2)
 
 # Enhanced smoothing function to reduce measurement fluctuation
 def apply_advanced_smoothing(object_id, current_measurements):
@@ -483,6 +541,10 @@ first_detection_time = None
 consistent_detection_timer = 0.0
 locked_detection_id = None
 
+# Locked pixel dimensions for display (both lock together when object locks)
+locked_marker_size_px = None
+locked_object_size_px = None
+
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -516,6 +578,12 @@ while True:
                 corners[0], KNOWN_MARKER_SIZE_MM
             )
             calibrated = True
+        
+        # Calculate marker pixel size (continuously updates, not locked yet)
+        corner_points = corners[0][0]
+        marker_width_px = np.linalg.norm(corner_points[0] - corner_points[1])
+        marker_height_px = np.linalg.norm(corner_points[1] - corner_points[2])
+        current_marker_size_px = (marker_width_px, marker_height_px)
         
         # Draw detected markers
         cv2.aruco.drawDetectedMarkers(display_frame, corners, ids)
@@ -555,6 +623,12 @@ while True:
                     # Apply advanced smoothing to reduce fluctuation
                     smoothed_measurements = apply_advanced_smoothing(detection['id'], measurements)
                     
+                    # Get object actual pixel size from rotated rect (not YOLO bbox)
+                    # This is the actual measured dimension used in calculations
+                    obj_width_px = smoothed_measurements['width_mm'] / pixel_to_mm_ratio
+                    obj_height_px = smoothed_measurements['height_mm'] / pixel_to_mm_ratio
+                    current_object_size_px = (obj_width_px, obj_height_px)
+                    
                     # Check if we should lock onto this object (5 seconds)
                     if consistent_detection_timer >= LOCK_THRESHOLD_SECONDS:
                         is_locked = True
@@ -564,7 +638,11 @@ while True:
                         locked_box = np.intp(locked_box)
                         locked_box[:, 0] += x
                         locked_box[:, 1] += y
+                        # Lock BOTH marker and object pixel dimensions together
+                        locked_marker_size_px = current_marker_size_px
+                        locked_object_size_px = current_object_size_px
                         print(f"🔒 LOCKED onto object (ID: {detection['id']}, Confidence: {detection['confidence']:.2f}) after {consistent_detection_timer:.1f}s")
+                        print(f"📏 Locked dimensions - Marker: {locked_marker_size_px[0]:.0f}x{locked_marker_size_px[1]:.0f}px, Object: {locked_object_size_px[0]:.0f}x{locked_object_size_px[1]:.0f}px")
                     
                     # Draw rotated rectangle
                     box = draw_rotated_rectangle(display_frame, rect, (x, y), 
@@ -579,11 +657,11 @@ while True:
                     cv2.circle(display_frame, center_abs, 6, (0, 255, 0), -1)
                     cv2.circle(display_frame, center_abs, 10, (0, 255, 0), 2)
                     
-                    # Draw measurement panel with smoothed values
-                    panel_x = display_frame.shape[1] - 420
-                    panel_y = 90
-                    draw_measurement_overlay(display_frame, smoothed_measurements, 
-                                           (panel_x, panel_y), "TARGET OBJECT")
+                    # Draw compact info panel in top right
+                    # If locked: show locked values, otherwise show current marker + no object yet
+                    display_marker_size = locked_marker_size_px if is_locked else current_marker_size_px
+                    display_object_size = locked_object_size_px if is_locked else None
+                    draw_compact_info_panel(display_frame, display_marker_size, display_object_size)
                     
                     # Draw detection bbox from YOLO
                     bbox = detection['bbox']
@@ -621,6 +699,9 @@ while True:
                 
                 # Still show ROI for context
                 roi_frame = frame[y:y+h, x:x+w].copy()
+                
+                # Draw info panel: show current marker size (updating) + no object
+                draw_compact_info_panel(display_frame, current_marker_size_px, None)
         else:
             # Locked mode - display frozen measurements
             # Draw locked rotated rectangle
@@ -635,11 +716,8 @@ while True:
             cv2.circle(display_frame, center_abs, 6, (255, 0, 255), -1)
             cv2.circle(display_frame, center_abs, 10, (255, 0, 255), 2)
             
-            # Draw measurement panel with locked values
-            panel_x = display_frame.shape[1] - 420
-            panel_y = 90
-            draw_measurement_overlay(display_frame, locked_measurements, 
-                                   (panel_x, panel_y), "🔒 LOCKED OBJECT")
+            # Draw compact info panel in top right with permanently locked values
+            draw_compact_info_panel(display_frame, locked_marker_size_px, locked_object_size_px)
             
             # Status
             status_text = "🔒 LOCKED - Press 'u' to UNLOCK"
@@ -694,6 +772,8 @@ while True:
         first_detection_time = None
         consistent_detection_timer = 0.0
         measurement_history.clear()
+        locked_marker_size_px = None
+        locked_object_size_px = None
     elif key == ord('u'):
         # Unlock detection
         if is_locked:
@@ -705,6 +785,7 @@ while True:
             consistent_detection_timer = 0.0
             locked_detection_id = None
             measurement_history.clear()
+            locked_object_size_px = None  # Clear object size but keep marker size
             print("🔓 Unlocked - resuming YOLO detection")
     elif key == ord('f'):
         cv2.waitKey(0)

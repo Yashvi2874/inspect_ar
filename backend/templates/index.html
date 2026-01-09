@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INSPECT-AR</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f1419 0%, #1a2332 100%);
+            color: #fff;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            text-align: center;
+            padding: 25px 0;
+            background: rgba(20, 25, 35, 0.8);
+            border-bottom: 2px solid #0ea5e9;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #0ea5e9;
+            text-shadow: 0 0 20px rgba(14, 165, 233, 0.5);
+            letter-spacing: 2px;
+        }
+
+        .main-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            position: relative;
+        }
+
+        .camera-container {
+            position: relative;
+            width: 90%;
+            max-width: 1400px;
+            height: 75vh;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 2px solid #0ea5e9;
+            display: none;
+        }
+
+        .camera-container.active {
+            display: block;
+        }
+
+        #videoFeed {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .start-screen {
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 30px;
+        }
+
+        .start-screen.hidden {
+            display: none;
+        }
+
+        .start-screen p {
+            font-size: 1.3rem;
+            color: #94a3b8;
+            max-width: 600px;
+        }
+
+        .btn {
+            padding: 18px 50px;
+            font-size: 1.2rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(14, 165, 233, 0.4);
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            z-index: 10;
+        }
+
+        .btn-control {
+            padding: 12px 30px;
+            font-size: 1rem;
+            background: rgba(15, 23, 42, 0.9);
+            color: white;
+            border: 2px solid #0ea5e9;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+
+        .btn-control:hover {
+            background: #0ea5e9;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.5);
+        }
+
+        .loading {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.2rem;
+            color: #0ea5e9;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .loading {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        .status-indicator {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 10px 20px;
+            background: rgba(15, 23, 42, 0.9);
+            border: 2px solid #0ea5e9;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #0ea5e9;
+            display: none;
+        }
+
+        .status-indicator.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>INSPECT-AR</h1>
+    </div>
+
+    <div class="main-container">
+        <div class="start-screen" id="startScreen">
+            <p>Real-time industrial object measurement with ArUco marker calibration</p>
+            <button class="btn btn-primary" onclick="startCamera()">Start Camera</button>
+        </div>
+
+        <div class="camera-container" id="cameraContainer">
+            <img id="videoFeed" src="" alt="Camera Feed">
+            <div class="status-indicator active">
+                <span>🔴 LIVE</span>
+            </div>
+            <div class="controls">
+                <button class="btn-control" onclick="resetDetection()">Reset Detection</button>
+                <button class="btn-control btn-danger" onclick="stopCamera()">Stop Camera</button>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">Initializing camera...</div>
+    </div>
+
+    <script>
+        async function startCamera() {
+            const startScreen = document.getElementById('startScreen');
+            const cameraContainer = document.getElementById('cameraContainer');
+            const loading = document.getElementById('loading');
+            const videoFeed = document.getElementById('videoFeed');
+
+            startScreen.classList.add('hidden');
+            loading.classList.add('active');
+
+            try {
+                const response = await fetch('/start_camera', {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    setTimeout(() => {
+                        loading.classList.remove('active');
+                        cameraContainer.classList.add('active');
+                        videoFeed.src = '/video_feed?' + new Date().getTime();
+                    }, 1000);
+                }
+            } catch (error) {
+                console.error('Error starting camera:', error);
+                loading.classList.remove('active');
+                alert('Failed to start camera');
+            }
+        }
+
+        async function stopCamera() {
+            const startScreen = document.getElementById('startScreen');
+            const cameraContainer = document.getElementById('cameraContainer');
+            const videoFeed = document.getElementById('videoFeed');
+
+            try {
+                await fetch('/stop_camera', {
+                    method: 'POST'
+                });
+
+                videoFeed.src = '';
+                cameraContainer.classList.remove('active');
+                startScreen.classList.remove('hidden');
+            } catch (error) {
+                console.error('Error stopping camera:', error);
+            }
+        }
+
+        async function resetDetection() {
+            try {
+                await fetch('/reset', {
+                    method: 'POST'
+                });
+            } catch (error) {
+                console.error('Error resetting:', error);
+            }
+        }
+
+        // Handle page close
+        window.addEventListener('beforeunload', () => {
+            fetch('/stop_camera', { method: 'POST' });
+        });
+    </script>
+</body>
+</html>
