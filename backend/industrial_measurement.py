@@ -55,7 +55,80 @@ aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
 aruco_params.cornerRefinementWinSize = 5
 aruco_params.minMarkerPerimeterRate = 0.03
 
+# Camera intrinsic parameters (you may need to calibrate these for your specific camera)
+# These are placeholder values - you should replace them with actual calibrated values
+CAMERA_MATRIX = np.array([
+    [800, 0, 640],  # fx, 0, cx
+    [0, 800, 360],  # 0, fy, cy
+    [0, 0, 1]       # 0, 0, 1
+], dtype=np.float32)
+DIST_COEFFS = np.zeros((4, 1))  # Assuming no lens distortion for simplicity
+
+
+def calibrate_camera_intrinsics():
+    """
+    Function to guide user through camera calibration process
+    This is a simplified version - in practice, you'd use multiple calibration images
+    """
+    print("\n=== CAMERA CALIBRATION GUIDE ===")
+    print("To improve measurement accuracy:")
+    print("1. Print a chessboard pattern (8x6 squares, known square size)")
+    print("2. Capture 15-25 images from different angles")
+    print("3. Use OpenCV's calibration functions")
+    print("4. Replace CAMERA_MATRIX and DIST_COEFFS with calibrated values")
+    print("\nFor best results, use a checkerboard with known square size in mm\n")
+
+
+def estimate_marker_pose(corners, ids, marker_length):
+    """
+    Estimate pose of ArUco markers to get 3D information
+    """
+    if ids is None or len(ids) == 0:
+        return None, None, None, None
+    
+    # Estimate pose of each marker
+    rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+        corners, marker_length, CAMERA_MATRIX, DIST_COEFFS
+    )
+    
+    # Calculate distance to each marker and extract tilt information
+    distances = []
+    tilt_angles = []
+    
+    for i in range(len(tvecs)):
+        # Extract translation vector (x, y, z)
+        tvec = tvecs[i][0]
+        # Calculate distance from camera to marker in meters, then convert to mm
+        distance = np.sqrt(tvec[0]**2 + tvec[1]**2 + tvec[2]**2) * 1000  # mm
+        distances.append(distance)
+        
+        # Convert rotation vector to rotation matrix
+        rmat, _ = cv2.Rodrigues(rvecs[i][0])
+        
+        # Calculate tilt angles from rotation matrix
+        # Extract Euler angles (approximate method)
+        pitch = np.arcsin(-rmat[2, 0])  # Pitch (rotation around x-axis)
+        yaw = np.arctan2(rmat[2, 1], rmat[2, 2])  # Yaw (rotation around y-axis)
+        roll = np.arctan2(rmat[1, 0], rmat[0, 0])  # Roll (rotation around z-axis)
+        
+        # Store tilt angles (pitch and yaw are most important for perspective correction)
+        tilt_angles.append({'pitch': pitch, 'yaw': yaw, 'roll': roll})
+    
+    return rvecs, tvecs, distances, tilt_angles
+
+
+def draw_axis_on_marker(frame, rvecs, tvecs, camera_matrix, dist_coeffs, marker_length):
+    """
+    Draw coordinate axes on the ArUco marker to visualize its orientation
+    """
+    # This function intentionally left empty due to OpenCV version compatibility issues
+    # The drawAxis function may not be available in all OpenCV versions
+    pass
+
 detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params)
+
+# Initialize variables for pose estimation
+marker_length = KNOWN_MARKER_SIZE_MM / 1000.0  # Convert mm to meters for pose estimation
 
 # Calibration function
 def compute_pixel_to_mm_ratio(marker_corners, known_size_mm):
@@ -295,6 +368,59 @@ def measure_object_with_rotation(contour, pixel_to_mm_ratio):
     
     return measurements, rect
 
+
+def measure_object_with_tilt_correction(contour, pixel_to_mm_ratio, marker_tilt_angles):
+    """
+    Measure object dimensions with basic calculations (correction applied externally)
+    """
+    if contour is None:
+        return None, None
+    
+    rect = cv2.minAreaRect(contour)
+    center, size, angle = rect
+    width_px, height_px = size
+    
+    if width_px < height_px:
+        width_px, height_px = height_px, width_px
+        angle = angle + 90
+    
+    # Basic conversion from pixels to mm without tilt correction
+    # Tilt correction is handled externally to avoid double correction
+    width_mm = width_px * pixel_to_mm_ratio
+    height_mm = height_px * pixel_to_mm_ratio
+    
+    # Simple subtraction to account for edge effects
+    width_mm = width_mm - 2  # Reduced adjustment to account for contour precision
+    height_mm = height_mm - 2
+    
+    area_px = cv2.contourArea(contour)
+    area_mm2 = area_px * (pixel_to_mm_ratio ** 2)
+    
+    perimeter_px = cv2.arcLength(contour, closed=True)
+    perimeter_mm = perimeter_px * pixel_to_mm_ratio
+    
+    x, y, bbox_w, bbox_h = cv2.boundingRect(contour)
+    bbox_width_mm = bbox_w * pixel_to_mm_ratio
+    bbox_height_mm = bbox_h * pixel_to_mm_ratio
+    
+    aspect_ratio = width_mm / height_mm if height_mm > 0 else 0
+    compactness = (4 * math.pi * area_px) / (perimeter_px ** 2) if perimeter_px > 0 else 0
+    
+    measurements = {
+        'width_mm': width_mm,
+        'height_mm': height_mm,
+        'area_mm2': area_mm2,
+        'perimeter_mm': perimeter_mm,
+        'angle_deg': angle,
+        'bbox_width_mm': bbox_width_mm,
+        'bbox_height_mm': bbox_height_mm,
+        'aspect_ratio': aspect_ratio,
+        'compactness': compactness,
+        'center': center
+    }
+    
+    return measurements, rect
+
 # Visualization functions
 def draw_rotated_rectangle(frame, rect, roi_offset, color=(0, 255, 0), thickness=2):
     box = cv2.boxPoints(rect)
@@ -304,13 +430,14 @@ def draw_rotated_rectangle(frame, rect, roi_offset, color=(0, 255, 0), thickness
     cv2.drawContours(frame, [box], 0, color, thickness)
     return box
 
-def draw_measurement_overlay(frame, measurements, position, object_label="OBJECT"):
+def draw_measurement_overlay(frame, measurements, position, object_label="OBJECT", distance_mm=None):
     x, y = position
     panel_width = 380
-    panel_height = 340
+    panel_height = 360  # Increased height to accommodate distance info
     
-    x = max(10, min(x, frame.shape[1] - panel_width - 10))
-    y = max(10, min(y, frame.shape[0] - panel_height - 10))
+    # Ensure the overlay stays within frame boundaries and avoids ROI area
+    x = max(20, min(x, frame.shape[1] - panel_width - 20))
+    y = max(100, min(y, frame.shape[0] - panel_height - 100))
     
     overlay = frame.copy()
     cv2.rectangle(overlay, (x, y), (x + panel_width, y + panel_height),
@@ -340,6 +467,10 @@ def draw_measurement_overlay(frame, measurements, position, object_label="OBJECT
         ("Aspect Ratio:", f"{measurements['aspect_ratio']:.2f}", (100, 200, 255)),
     ]
     
+    # Add distance if available
+    if distance_mm is not None:
+        metrics.append(("Distance:", f"{distance_mm:.1f} mm", (100, 100, 255)))
+    
     for i, (label, value, color) in enumerate(metrics):
         y_pos = y_offset + i * line_spacing
         if label:  # Skip spacers
@@ -349,6 +480,7 @@ def draw_measurement_overlay(frame, measurements, position, object_label="OBJECT
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
 def draw_dimension_lines(frame, box, measurements):
+    # Draw dimension lines and text on the object box
     mid_bottom = ((box[0] + box[1]) // 2).astype(int)
     cv2.putText(frame, f"{measurements['width_mm']:.1f}mm",
                 tuple(mid_bottom + [0, 25]),
@@ -359,20 +491,21 @@ def draw_dimension_lines(frame, box, measurements):
                 tuple(mid_left - [80, 0]),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
-def draw_compact_info_panel(frame, marker_size_px, object_size_px=None):
+def draw_compact_info_panel(frame, marker_size_px, object_size_px=None, marker_distance=None):
     """
     Draw a compact info panel in top right corner with pixel dimensions
     Args:
         marker_size_px: Tuple of (width, height) in pixels for marker
         object_size_px: Tuple of (width, height) in pixels for object (or None)
+        marker_distance: Distance to marker in mm (or None)
     """
     panel_width = 300
-    panel_height = 140
+    panel_height = 170  # Increased height to accommodate distance info
     margin = 15
     
-    # Position in top right
-    x = frame.shape[1] - panel_width - margin
-    y = 80  # Below header
+    # Position in bottom right - ensuring it's away from ROI
+    x = max(10, frame.shape[1] - panel_width - margin)  # Ensure minimum left margin
+    y = max(100, frame.shape[0] - panel_height - 80)  # Ensure it's above status bar and away from ROI area
     
     # Draw semi-transparent background
     overlay = frame.copy()
@@ -415,6 +548,21 @@ def draw_compact_info_panel(frame, marker_size_px, object_size_px=None):
         text_color = (100, 100, 100)
     
     cv2.putText(frame, object_text, (x + 150, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2)
+    
+    # Distance to marker
+    y_offset += line_spacing
+    cv2.putText(frame, "Distance:", (x + 15, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+    
+    if marker_distance is not None:
+        distance_text = f"{marker_distance:.1f} mm"
+        text_color = (100, 100, 255)
+    else:
+        distance_text = "--- mm"
+        text_color = (100, 100, 100)
+    
+    cv2.putText(frame, distance_text, (x + 150, y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2)
 
 # Enhanced smoothing function to reduce measurement fluctuation
@@ -519,7 +667,8 @@ def apply_advanced_smoothing(object_id, current_measurements):
 # Initialize webcam
 print(f"Selected marker size: {KNOWN_MARKER_SIZE_MM}x{KNOWN_MARKER_SIZE_MM}mm")
 print(f"Selected dictionary: {dict_name}")
-print("Initializing webcam...")
+calibrate_camera_intrinsics()  # Show calibration guide
+print("Initializing webcam with pose estimation enabled...")
 cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
@@ -587,6 +736,9 @@ while True:
     cv2.putText(display_frame, "ZENITH INSPECT-AR - Industrial Measurement", 
                 (20, 45), cv2.FONT_HERSHEY_DUPLEX, 0.9, (14, 165, 233), 2)
     
+    # Estimate pose of markers for 3D information
+    rvecs, tvecs, marker_distances, marker_tilt_angles = estimate_marker_pose(corners, ids, marker_length) if ids is not None else (None, None, None, None)
+    
     if ids is not None and len(ids) > 0:
         # Calibrate using first marker
         if not calibrated:
@@ -594,6 +746,41 @@ while True:
                 corners[0], KNOWN_MARKER_SIZE_MM
             )
             calibrated = True
+        
+        # Apply perspective correction based on marker tilt angles
+        if calibrated and marker_tilt_angles is not None and len(marker_tilt_angles) > 0:
+            # Get tilt angles for the first marker
+            tilt = marker_tilt_angles[0]
+            pitch = abs(tilt['pitch'])
+            yaw = abs(tilt['yaw'])
+            
+            # Calculate the effective tilt angle for perspective correction
+            # Use the maximum of pitch and yaw as the primary tilt factor
+            tilt_angle = max(pitch, yaw)
+            
+            # Calculate correction factor based on tilt
+            # The cosine of the tilt angle is used to correct for perspective distortion
+            cos_tilt = np.abs(np.cos(tilt_angle))  # Use absolute value to handle negative angles
+            # Limit the correction factor to prevent extreme values when marker is nearly perpendicular
+            cos_tilt = max(0.3, cos_tilt)  # Don't let it go below 0.3 to prevent extreme corrections
+            perspective_correction_factor = 1.0 / cos_tilt
+            
+            # Only apply correction if tilt is significant (> 10 degrees)
+            if tilt_angle > 0.175:  # About 10 degrees
+                # Also apply distance-based correction
+                distance_correction_factor = 1.0
+                if marker_distances is not None and len(marker_distances) > 0:
+                    current_distance = marker_distances[0]  # Distance to first marker in mm
+                    # Reference distance (when marker is at ideal position)
+                    reference_distance = KNOWN_MARKER_SIZE_MM * 10  # Adjust as needed
+                    distance_correction_factor = current_distance / reference_distance
+                
+                # Combine both corrections
+                corrected_pixel_to_mm_ratio = pixel_to_mm_ratio * perspective_correction_factor * distance_correction_factor
+            else:
+                corrected_pixel_to_mm_ratio = pixel_to_mm_ratio  # No significant tilt, use base ratio
+        else:
+            corrected_pixel_to_mm_ratio = pixel_to_mm_ratio
         
         # Calculate marker pixel size (continuously updates, not locked yet)
         corner_points = corners[0][0]
@@ -603,6 +790,11 @@ while True:
         
         # Draw detected markers
         cv2.aruco.drawDetectedMarkers(display_frame, corners, ids)
+        
+        # Draw coordinate axes on markers to visualize orientation
+        # Note: Axis drawing temporarily disabled due to OpenCV version compatibility
+        # if rvecs is not None and tvecs is not None:
+        #    draw_axis_on_marker(display_frame, rvecs, tvecs, CAMERA_MATRIX, DIST_COEFFS, marker_length)
         
         # Define ROI near marker
         roi_rect, roi_center = define_roi_near_marker(corners[0], frame.shape)
@@ -632,8 +824,11 @@ while True:
                 else:
                     consistent_detection_timer = current_time - first_detection_time
                 
-                # Measure object with rotation handling
-                measurements, rect = measure_object_with_rotation(contour, pixel_to_mm_ratio)
+                # Use corrected pixel-to-mm ratio if available, otherwise use base ratio
+                current_pixel_to_mm_ratio = corrected_pixel_to_mm_ratio if 'corrected_pixel_to_mm_ratio' in locals() else pixel_to_mm_ratio
+                
+                # Measure object with rotation and tilt correction
+                measurements, rect = measure_object_with_tilt_correction(contour, current_pixel_to_mm_ratio, marker_tilt_angles)
                 
                 if measurements is not None:
                     # Apply advanced smoothing to reduce fluctuation
@@ -641,8 +836,8 @@ while True:
                     
                     # Get object actual pixel size from rotated rect (not YOLO bbox)
                     # This is the actual measured dimension used in calculations
-                    obj_width_px = smoothed_measurements['width_mm'] / pixel_to_mm_ratio
-                    obj_height_px = smoothed_measurements['height_mm'] / pixel_to_mm_ratio
+                    obj_width_px = smoothed_measurements['width_mm'] / current_pixel_to_mm_ratio
+                    obj_height_px = smoothed_measurements['height_mm'] / current_pixel_to_mm_ratio
                     current_object_size_px = (obj_width_px, obj_height_px)
                     
                     # Check if we should lock onto this object (5 seconds)
@@ -667,17 +862,22 @@ while True:
                     # Draw dimension lines with smoothed values
                     draw_dimension_lines(display_frame, box, smoothed_measurements)
                     
+                    # Draw measurement overlay - moved to left side to avoid ROI
+                    distance_info = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                    draw_measurement_overlay(display_frame, smoothed_measurements, (20, 100), distance_mm=distance_info)
+                    
                     # Draw center point
                     center_abs = (int(smoothed_measurements['center'][0]) + x, 
                                  int(smoothed_measurements['center'][1]) + y)
                     cv2.circle(display_frame, center_abs, 6, (0, 255, 0), -1)
                     cv2.circle(display_frame, center_abs, 10, (0, 255, 0), 2)
                     
-                    # Draw compact info panel in top right
+                    # Draw compact info panel in bottom right (away from ROI)
                     # If locked: show locked values, otherwise show current marker + no object yet
                     display_marker_size = locked_marker_size_px if is_locked else current_marker_size_px
                     display_object_size = locked_object_size_px if is_locked else None
-                    draw_compact_info_panel(display_frame, display_marker_size, display_object_size)
+                    display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                    draw_compact_info_panel(display_frame, display_marker_size, display_object_size, marker_distance=display_distance)
                     
                     # Draw detection bbox from YOLO
                     bbox = detection['bbox']
@@ -716,8 +916,9 @@ while True:
                 # Still show ROI for context
                 roi_frame = frame[y:y+h, x:x+w].copy()
                 
-                # Draw info panel: show current marker size (updating) + no object
-                draw_compact_info_panel(display_frame, current_marker_size_px, None)
+                # Draw info panel in bottom right: show current marker size (updating) + no object
+                display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                draw_compact_info_panel(display_frame, current_marker_size_px, None, marker_distance=display_distance)
         else:
             # Locked mode - display frozen measurements
             # Draw locked rotated rectangle
@@ -726,14 +927,19 @@ while True:
             # Draw dimension lines with locked values
             draw_dimension_lines(display_frame, locked_box, locked_measurements)
             
+            # Draw measurement overlay for locked object - moved to left side to avoid ROI
+            distance_info = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+            draw_measurement_overlay(display_frame, locked_measurements, (20, 100), distance_mm=distance_info)
+            
             # Draw center point with locked measurements
             center_abs = (int(locked_measurements['center'][0]) + x, 
                          int(locked_measurements['center'][1]) + y)
             cv2.circle(display_frame, center_abs, 6, (255, 0, 255), -1)
             cv2.circle(display_frame, center_abs, 10, (255, 0, 255), 2)
             
-            # Draw compact info panel in top right with permanently locked values
-            draw_compact_info_panel(display_frame, locked_marker_size_px, locked_object_size_px)
+            # Draw compact info panel in bottom right with permanently locked values
+            display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+            draw_compact_info_panel(display_frame, locked_marker_size_px, locked_object_size_px, marker_distance=display_distance)
             
             # Status
             status_text = "🔒 LOCKED - Press 'u' to UNLOCK"
@@ -742,8 +948,8 @@ while True:
             # Still show ROI for context (but no detection)
             roi_frame = frame[y:y+h, x:x+w].copy()
         
-        # Show ROI and binary mask in corner (for debugging)
-        if roi_frame is not None:
+        # Show ROI and binary mask in corner (for debugging) - moved to upper left
+        if roi_frame is not None and roi_frame.size > 0:
             roi_small = cv2.resize(roi_frame, (200, 150))
             display_frame[90:240, 10:210] = roi_small
             cv2.rectangle(display_frame, (10, 90), (210, 240), (255, 200, 0), 2)
