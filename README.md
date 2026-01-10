@@ -1,8 +1,7 @@
-<div align="center">
-
 # INSPECT-AR  
 **AI-Powered Industrial Object Inspection System**  
 From Manual Inspection to AI Inspector
+![WhatsApp Image 2026-01-10 at 10 57 53](https://github.com/user-attachments/assets/37184715-7663-4e66-92bd-a9b3a7ec6347)
 
 </div>
 
@@ -10,6 +9,8 @@ From Manual Inspection to AI Inspector
   <strong>HAL Aerospace Challenge — Aerothon Hackathon</strong><br>
   <strong>Team ZENITH</strong> — KJ Somaiya College of Engineering
 </p>
+
+![WhatsApp Image 2026-01-08 at 17 17 02](https://github.com/user-attachments/assets/d0c6370f-2672-4198-9f87-c6644fe6cd58)
 
 <p align="center">
   <img src="https://img.shields.io/badge/Hackathon-HAL%20Aerothon-blue?style=for-the-badge" alt="HAL Aerothon">
