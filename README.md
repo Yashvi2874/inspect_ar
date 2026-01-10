@@ -1,3 +1,5 @@
+<div  align="center">
+  
 # INSPECT-AR  
 **AI-Powered Industrial Object Inspection System**  
 From Manual Inspection to AI Inspector
