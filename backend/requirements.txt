@@ -12,6 +12,10 @@ tensorflow>=2.13.0
 torch>=2.0.0
 transformers>=4.38.0
 
+# HTTP API (backend/app.py)
+flask>=3.0.0
+flask-cors>=4.0.0
+
 # Data Processing
 pandas>=2.1.0
 

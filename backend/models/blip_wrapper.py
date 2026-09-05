@@ -5,7 +5,6 @@ Extracted from Captioning-of-Aircraft-Images.ipynb
 
 import cv2
 import numpy as np
-import tensorflow as tf
 from PIL import Image
 from transformers import BlipProcessor, BlipForConditionalGeneration
 from pathlib import Path

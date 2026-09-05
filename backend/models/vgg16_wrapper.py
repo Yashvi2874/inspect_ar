@@ -31,21 +31,39 @@ class VGG16DefectDetector:
         self.device = device or "cpu"
         self.img_rows, self.img_cols = 224, 224
         self.input_shape = (self.img_rows, self.img_cols, 3)
-        self.class_names = ["normal", "defect"]
-        
-        # Build model
+        # The training notebook used flow_from_directory over crack/ and dent/,
+        # which maps crack=0 and dent=1. BOTH are damage; the dataset has no
+        # healthy class. The old ["normal", "defect"] labelling meant a crack
+        # was reported as "normal", i.e. as not a defect.
+        self.class_names = ["crack", "dent"]
+
+        # Build model. VGG16(weights='imagenet') downloads ~58 MB on first use,
+        # so this can fail on an offline machine; let that surface here rather
+        # than halfway through a frame.
         self.model = self._build_model()
-        
+
+        self.weights_loaded = False
+
         # Load checkpoint if provided
         if checkpoint_path and Path(checkpoint_path).exists():
             try:
                 self.model.load_weights(checkpoint_path)
-                print(f"✅ VGG16 model loaded from {checkpoint_path}")
+                self.weights_loaded = True
+                print(f"[ok] VGG16 model loaded from {checkpoint_path}")
             except Exception as e:
-                print(f"⚠️ Could not load weights: {e}")
-                print("📌 Using randomly initialized model")
+                print(f"[warn] Could not load weights: {e}")
+                print("[warn] Predictions from this model are MEANINGLESS "
+                      "(randomly initialized head).")
         else:
-            print("📌 Using randomly initialized VGG16 model")
+            print("[warn] No VGG16 checkpoint found. Predictions from this "
+                  "model are MEANINGLESS (randomly initialized head).")
+
+        if not self.weights_loaded:
+            # best_model.pth is a PyTorch Faster R-CNN; Keras cannot read it and
+            # no .keras/.weights.h5 exists anywhere in the project, so this path
+            # is the norm rather than the exception. Use DefectDetector instead.
+            print("[warn] Prefer models.defect_detector.DefectDetector, which "
+                  "has real trained weights.")
     
     def _build_model(self):
         """Build VGG16 model architecture."""
@@ -109,19 +127,25 @@ class VGG16DefectDetector:
             # Preprocess and predict
             tensor = self._preprocess(roi)
             
-            with tf.no_grad():
-                logits = self.model(tensor, training=False)
-                confidence = float(logits[0].numpy()[0])
-            
-            # Determine class (binary classification)
+            # `tf.no_grad()` does not exist — that is the PyTorch API
+            # (torch.no_grad) and it raised AttributeError on every call,
+            # taking the whole pipeline down. Keras builds no gradient tape
+            # under training=False, so no context manager is needed here.
+            logits = self.model(tensor, training=False)
+            confidence = float(logits[0].numpy()[0])
+
+            # Sigmoid output: p is P(class 1) = P(dent), so 1-p is P(crack).
             class_id = 1 if confidence > 0.5 else 0
             confidence = confidence if class_id == 1 else 1 - confidence
-            
+
             results["objects"][obj_id] = {
                 "predicted_class": self.class_names[class_id],
                 "class_id": class_id,
                 "confidence": float(confidence),
-                "has_defect": class_id == 1
+                # Both trained classes are damage: crack and dent. There is no
+                # healthy class, so a prediction either way means damage.
+                "has_defect": True,
+                "weights_loaded": self.weights_loaded,
             }
         
         return results

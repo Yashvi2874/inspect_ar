@@ -10,12 +10,26 @@ from typing import Dict, List, Tuple
 import time
 
 from models.yolo_detector import YOLODetector
-from models.vgg16_wrapper import VGG16DefectDetector
+from models.defect_detector import DefectDetector
 from models.blip_wrapper import BLIPCaptioner
 from models.dimension_detector import DimensionDetector
 from models.aruco_calibration import ArucoCalibrator
 from utils.image_processor import ImageProcessor
-import industrial_measurement as im
+
+# models.vgg16_wrapper is imported lazily, inside __init__, because importing it
+# pulls in the whole TensorFlow runtime. Loading TensorFlow and PyTorch into one
+# process segfaults on some setups (reproduced here), and the VGG16 stage is off
+# by default, so paying that cost at module scope would be both risky and
+# pointless.
+
+# NOTE: `import industrial_measurement` used to sit here. That module has no
+# __main__ guard: importing it calls input() twice and opens a webcam at module
+# scope, so this file could never be imported at all. The alias was referenced
+# zero times. Do not reinstate it without wrapping that module in a main().
+
+# Everything below resolves relative to backend/, not to the caller's working
+# directory, so the pipeline behaves the same from any cwd.
+BACKEND_DIR = Path(__file__).resolve().parent
 
 
 class IntegratedInspectionPipeline:
@@ -30,59 +44,97 @@ class IntegratedInspectionPipeline:
     def __init__(
         self,
         models_folder: Path = None,
-        use_vgg16: bool = True,
+        use_defect_detector: bool = True,
+        use_yolo: bool = False,
+        use_vgg16: bool = False,
         use_blip: bool = True,
         use_dimensions: bool = True
     ):
         """
         Initialize the integrated pipeline.
-        
+
         Args:
-            models_folder: Path to models directory
-            use_vgg16: Enable VGG16 defect detection
-            use_blip: Enable BLIP captioning
-            use_dimensions: Enable dimension measurement
+            models_folder: Path to models directory. Defaults to backend/models.
+            use_defect_detector: Use the trained Faster R-CNN damage detector.
+                This is the only stage in the project trained on aircraft
+                damage, so it is on by default and it both localises and labels
+                damage in one pass.
+            use_yolo: Also run YOLO. Off by default: the bundled weights are
+                stock COCO, which has no damage classes and reports things like
+                "clock" on aircraft skin.
+            use_vgg16: Run the Keras VGG16 classifier. Off by default: no
+                trained weights for it exist anywhere in the project, so it
+                would classify using a randomly initialised head.
+            use_blip: Enable BLIP captioning.
+            use_dimensions: Enable dimension measurement.
         """
-        self.models_folder = models_folder or Path("backend/models")
-        
-        print("🚀 Initializing Integrated Inspection Pipeline...")
-        
-        # Initialize object detector
-        print("📌 Loading YOLO detector...")
-        self.yolo_detector = YOLODetector(models_folder=self.models_folder)
-        
-        # Initialize defect detector
+        self.models_folder = Path(models_folder) if models_folder else BACKEND_DIR / "models"
+
+        print("Initializing Integrated Inspection Pipeline...")
+
+        # Trained damage detector — the primary detection stage
+        if use_defect_detector:
+            print("  Loading Faster R-CNN defect detector...")
+            self.defect_detector = DefectDetector(
+                checkpoint_path=self.models_folder / "best_model.pth"
+            )
+        else:
+            self.defect_detector = None
+
+        # Generic object detector (optional, stock COCO classes)
+        if use_yolo:
+            print("  Loading YOLO detector...")
+            self.yolo_detector = YOLODetector(models_folder=self.models_folder)
+        else:
+            self.yolo_detector = None
+
+        # Legacy Keras classifier (optional, untrained)
         if use_vgg16:
-            print("📌 Loading VGG16 defect detector...")
+            print("  Loading VGG16 defect detector...")
+            from models.vgg16_wrapper import VGG16DefectDetector  # pulls in TensorFlow
             checkpoint = self.models_folder / "best_model.pth"
             self.vgg16_detector = VGG16DefectDetector(checkpoint_path=checkpoint)
         else:
             self.vgg16_detector = None
-        
+
+        if self.defect_detector is None and self.yolo_detector is None:
+            raise ValueError(
+                "No detection stage enabled: set use_defect_detector or use_yolo."
+            )
+
         # Initialize captioner
         if use_blip:
-            print("📌 Loading BLIP captioner...")
-            self.blip_captioner = BLIPCaptioner()
+            print("  Loading BLIP captioner...")
+            # BLIP fetches ~1 GB from Hugging Face on first use. That fails on
+            # an offline machine, and captioning is the least essential stage,
+            # so a failure here degrades the pipeline instead of stopping it.
+            # (A native crash from an out-of-memory load cannot be caught here;
+            # if the process dies outright, run with use_blip=False.)
+            try:
+                self.blip_captioner = BLIPCaptioner()
+            except Exception as e:
+                print(f"  [warn] BLIP unavailable, captions disabled: {e}")
+                self.blip_captioner = None
         else:
             self.blip_captioner = None
-        
+
         # Initialize dimension detector
         if use_dimensions:
-            print("📌 Loading dimension detector...")
+            print("  Loading dimension detector...")
             self.dimension_detector = DimensionDetector(models_folder=self.models_folder)
             self.aruco_calibrator = ArucoCalibrator()
         else:
             self.dimension_detector = None
             self.aruco_calibrator = None
-        
+
         # Image processor
         self.image_processor = ImageProcessor()
-        
+
         # Calibration data
         self.calibration_data = None
         self.pixel_to_mm_ratio = None
-        
-        print("✅ Pipeline initialized successfully")
+
+        print("[ok] Pipeline initialized successfully")
     
     def calibrate(self, frame: np.ndarray, marker_size_mm: float = 50.0) -> bool:
         """
@@ -96,25 +148,30 @@ class IntegratedInspectionPipeline:
             True if calibration successful
         """
         if self.aruco_calibrator is None:
-            print("⚠️ Dimension detector not enabled")
+            print("[warn] Dimension detector not enabled")
             return False
-        
+
         try:
-            print("📌 Calibrating camera...")
+            print("Calibrating camera...")
             self.calibration_data = self.aruco_calibrator.detect_and_calibrate(
                 frame,
                 marker_size_mm=marker_size_mm
             )
-            
-            if self.calibration_data and "pixel_to_mm_ratio" in self.calibration_data:
+
+            # Test the success flag, not merely the presence of the ratio key.
+            # The key is always present; on failure its value is None.
+            if self.calibration_data.get("success"):
                 self.pixel_to_mm_ratio = self.calibration_data["pixel_to_mm_ratio"]
-                print(f"✅ Calibration successful. Ratio: {self.pixel_to_mm_ratio:.4f} mm/px")
+                print(f"[ok] Calibration successful. Ratio: {self.pixel_to_mm_ratio:.4f} mm/px")
                 return True
-            else:
-                print("⚠️ Calibration failed - marker not detected")
-                return False
+
+            self.pixel_to_mm_ratio = None
+            reason = self.calibration_data.get("error", "marker not detected")
+            print(f"[warn] Calibration failed - {reason}")
+            return False
         except Exception as e:
-            print(f"⚠️ Calibration error: {e}")
+            self.pixel_to_mm_ratio = None
+            print(f"[warn] Calibration error: {e}")
             return False
     
     def process_frame(
@@ -152,42 +209,77 @@ class IntegratedInspectionPipeline:
             "processing_time": 0
         }
         
-        # Step 1: Object Detection (YOLO)
-        print("🔍 Step 1: Object Detection...")
-        yolo_results = self.yolo_detector.detect(processed_frame, conf_threshold=conf_threshold)
-        detections = yolo_results.get("detections", [])
-        results["detections"] = detections
-        print(f"   Found {len(detections)} objects")
-        
+        # Step 1: Damage detection (trained Faster R-CNN)
+        detections = []
+        if self.defect_detector is not None:
+            print("Step 1: Damage detection (Faster R-CNN)...")
+            # The detector runs on the ORIGINAL frame, not the preprocessed one.
+            # ImageProcessor.preprocess collapses the image to grayscale and back
+            # to 3 identical channels; the detector was trained on colour.
+            detections = self.defect_detector.detect_frame(frame)
+            results["detections"] = detections
+            # This model localises and labels in one pass, so the defect map is
+            # a direct read of the same detections rather than a second stage.
+            results["defects"] = {
+                d["id"]: {
+                    "predicted_class": d["class"],
+                    "class_id": d["class_id"],
+                    "confidence": d["confidence"],
+                    "has_defect": True,
+                    "untrained_class": d["untrained_class"],
+                }
+                for d in detections
+            }
+            print(f"   Found {len(detections)} damage regions")
+
+        # Step 1b: Generic object detection (optional, stock COCO classes)
+        if self.yolo_detector is not None:
+            print("Step 1b: Object detection (YOLO)...")
+            yolo_results = self.yolo_detector.detect(processed_frame, conf_threshold=conf_threshold)
+            yolo_detections = yolo_results.get("detections", [])
+            # Keep ids unique across both detectors.
+            offset = len(detections)
+            for i, d in enumerate(yolo_detections):
+                d["id"] = offset + i
+            detections = detections + yolo_detections
+            results["detections"] = detections
+            print(f"   Found {len(yolo_detections)} generic objects")
+
         if len(detections) == 0:
             results["processing_time"] = time.time() - start_time
             return results
-        
-        # Step 2: Defect Classification (VGG16)
+
+        # Step 2: Defect Classification (VGG16, optional legacy path)
         if self.vgg16_detector is not None:
-            print("🔍 Step 2: Defect Classification (VGG16)...")
+            print("Step 2: Defect Classification (VGG16)...")
             defect_results = self.vgg16_detector.detect(processed_frame, detections)
             results["defects"] = defect_results.get("objects", {})
             print(f"   Classified {len(results['defects'])} objects")
-        
+
         # Step 3: Image Captioning (BLIP)
         if self.blip_captioner is not None:
-            print("🔍 Step 3: Image Captioning (BLIP)...")
+            print("Step 3: Image Captioning (BLIP)...")
             caption_results = self.blip_captioner.process_detections(processed_frame, detections)
             results["captions"] = caption_results.get("captions", {})
             print(f"   Generated captions for {len(results['captions'])} objects")
-        
+
         # Step 4: Dimension Measurement
         if self.dimension_detector is not None and self.pixel_to_mm_ratio is not None:
-            print("🔍 Step 4: Dimension Measurement...")
+            print("Step 4: Dimension Measurement...")
             dimension_results = self.dimension_detector.measure(
                 processed_frame,
                 detections,
                 self.pixel_to_mm_ratio
             )
-            results["dimensions"] = dimension_results
-            print(f"   Measured dimensions for {len(detections)} objects")
-        
+            # measure() returns {'objects': {...}, 'overall_confidence': ...}.
+            # Assigning that envelope whole meant every `obj_id in
+            # results["dimensions"]` test compared an int against the keys
+            # "objects"/"overall_confidence" and was always False, so measured
+            # dimensions could never reach the display.
+            results["dimensions"] = dimension_results.get("objects", {})
+            results["dimension_confidence"] = dimension_results.get("overall_confidence")
+            print(f"   Measured dimensions for {len(results['dimensions'])} objects")
+
         results["processing_time"] = time.time() - start_time
         return results
     
@@ -270,9 +362,10 @@ class IntegratedInspectionPipeline:
             # Draw dimensions
             if show_dimensions and obj_id in results.get("dimensions", {}):
                 dim_info = results["dimensions"][obj_id]
-                width = dim_info.get("width", 0)
-                height = dim_info.get("height", 0)
-                
+                # DimensionDetector.measure emits width_mm/height_mm/area_mm2.
+                width = dim_info.get("width_mm", 0)
+                height = dim_info.get("height_mm", 0)
+
                 cv2.putText(
                     output_frame,
                     f"W:{width:.1f}mm H:{height:.1f}mm",
@@ -320,6 +413,6 @@ class IntegratedInspectionPipeline:
             
             if obj_id in results.get("dimensions", {}):
                 dims = results["dimensions"][obj_id]
-                print(f"  Dimensions: {dims.get('width', 0):.1f}mm x {dims.get('height', 0):.1f}mm")
+                print(f"  Dimensions: {dims.get('width_mm', 0):.1f}mm x {dims.get('height_mm', 0):.1f}mm")
         
         print("\n" + "="*60 + "\n")

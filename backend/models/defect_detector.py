@@ -1,55 +1,112 @@
 """
 Defect Detector Module for ZENITH INSPECT-AR
-Loads a trained defect classification model and runs inference on detected ROIs
+
+Loads the trained Faster R-CNN damage detector and runs inference on frames.
+
+The checkpoint (`best_model.pth`) is a torchvision Faster R-CNN with a
+ResNet50-FPN backbone and an 8-class head, trained by
+`defects_3dataset/train_defect_detection.py`. It is a *detector*: it localises
+damage and labels it in a single pass, so it does not need YOLO to hand it
+boxes first.
+
+Earlier versions of this file rebuilt a ResNet18 classifier instead, which
+matched none of the checkpoint's 295 tensors and silently fell back to random
+weights. Loading here is strict: a mismatch raises rather than degrading to
+noise.
 """
 
 import cv2
 import torch
-import torch.nn as nn
 import numpy as np
 from pathlib import Path
-from typing import Dict, List
-import torchvision.models as models
+from typing import Dict, List, Optional
+from torchvision.models.detection import fasterrcnn_resnet50_fpn
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.ops.misc import FrozenBatchNorm2d
 
 
 # --------------------------------------------------
-# Model Architecture (MUST match training)
+# Class map
 # --------------------------------------------------
-def build_defect_model(num_classes: int, checkpoint_path: Path):
-    """
-    Rebuild the same architecture used during training
-    First, try to determine the architecture from the checkpoint
-    """
-    try:
-        # Load the checkpoint to inspect its structure
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            state_dict = checkpoint['model_state_dict']
-        else:
-            state_dict = checkpoint
+# The training script concatenated two Roboflow COCO exports and used their raw
+# `category_id` values as labels, with no remapping. Their id spaces overlap, so
+# class 1 is a genuine mixture of two source categories:
+#
+#   dataset v2 "stock-defect-class"   -> id 1 = "defect"  (1448 boxes)
+#   dataset v4 "5-classes"            -> id 1 = "crack"   ( 996 boxes)
+#
+# Classes 6 and 7 exist in the head but were never trained: no annotation in
+# either dataset carries those ids. Predictions for them are meaningless.
+#
+# Verified against data/*/train/_annotations.coco.json on 2026-09-04.
+NUM_CLASSES = 8
 
-        # Check for specific architecture indicators in the state dict keys
-        keys = list(state_dict.keys())
-        if any('backbone' in key for key in keys):
-            # This appears to be a detection model like Faster R-CNN
-            # For defect detection, we'll need to adapt it or use a classification model instead
-            print("⚠️  Detected object detection model (e.g., Faster R-CNN)")
-            print("💡 For defect classification, a ResNet-based classifier is recommended")
-            # Fall back to a classification model
-            model = models.resnet18(weights=None)
-            model.fc = nn.Linear(model.fc.in_features, num_classes)
-            return model
+CLASS_NAMES = {
+    0: "background",
+    1: "crack_or_defect",   # see collision note above
+    2: "dent",
+    3: "missing-head",
+    4: "paint-off",
+    5: "scratch",
+    6: "untrained_6",
+    7: "untrained_7",
+}
+
+# Classes the checkpoint never saw a single training box for.
+UNTRAINED_CLASS_IDS = frozenset({6, 7})
+
+DEFAULT_CHECKPOINT = Path(__file__).resolve().parent / "best_model.pth"
+
+
+# --------------------------------------------------
+# Model construction
+# --------------------------------------------------
+def _freeze_batchnorm(module: torch.nn.Module) -> torch.nn.Module:
+    """
+    Replace every BatchNorm2d with FrozenBatchNorm2d, in place.
+
+    torchvision picks the normalisation layer from its weight arguments:
+    `fasterrcnn_resnet50_fpn` uses FrozenBatchNorm2d when either `weights` or
+    `weights_backbone` is set, and plain BatchNorm2d when both are None. The
+    training script passed weights="DEFAULT", so the checkpoint is a
+    FrozenBatchNorm model and carries no `num_batches_tracked` buffers.
+
+    Building with both set to None (to avoid a ~100 MB download we would
+    immediately overwrite) would therefore give a subtly different module tree.
+    load_state_dict would not catch it: BatchNorm's loader silently defaults a
+    missing `num_batches_tracked` to 0 instead of reporting a missing key. The
+    two are numerically identical under eval(), but a BatchNorm model put into
+    train() would start updating its running statistics and corrupt the
+    weights. Converting here keeps the architecture faithful.
+    """
+    for name, child in module.named_children():
+        if isinstance(child, torch.nn.BatchNorm2d):
+            frozen = FrozenBatchNorm2d(child.num_features, eps=child.eps)
+            frozen.weight.data = child.weight.data.clone()
+            frozen.bias.data = child.bias.data.clone()
+            frozen.running_mean.data = child.running_mean.data.clone()
+            frozen.running_var.data = child.running_var.data.clone()
+            setattr(module, name, frozen)
         else:
-            # Try ResNet18 as default
-            model = models.resnet18(weights=None)
-            model.fc = nn.Linear(model.fc.in_features, num_classes)
-            return model
-    except Exception as e:
-        print(f"⚠️ Error inspecting checkpoint: {e}")
-        # Default to ResNet18 if inspection fails
-        model = models.resnet18(weights=None)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-        return model
+            _freeze_batchnorm(child)
+    return module
+
+
+def build_defect_model(num_classes: int = NUM_CLASSES) -> torch.nn.Module:
+    """
+    Rebuild the exact architecture used during training.
+
+    Must stay in step with defects_3dataset/train_defect_detection.py:get_model,
+    which swaps the stock 91-class COCO box predictor for an 8-class one.
+    """
+    # Both weight arguments are None: every tensor is about to be overwritten
+    # from the checkpoint, so downloading pretrained weights first would be
+    # wasted bandwidth. See _freeze_batchnorm for why the conversion follows.
+    model = fasterrcnn_resnet50_fpn(weights=None, weights_backbone=None)
+    _freeze_batchnorm(model)
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    return model
 
 
 # --------------------------------------------------
@@ -58,93 +115,176 @@ def build_defect_model(num_classes: int, checkpoint_path: Path):
 class DefectDetector:
     def __init__(
         self,
-        checkpoint_path: Path,
-        num_classes: int = 2,
-        device: str = None
+        checkpoint_path: Optional[Path] = None,
+        num_classes: int = NUM_CLASSES,
+        device: Optional[str] = None,
+        score_threshold: float = 0.5,
     ):
         """
         Args:
-            checkpoint_path: path to best_model.pth
-            num_classes: number of defect classes
-            device: cpu / cuda
+            checkpoint_path: path to best_model.pth. Defaults to the copy that
+                sits beside this file.
+            num_classes: size of the detection head. Must match the checkpoint.
+            device: "cpu" or "cuda". Auto-detected when omitted.
+            score_threshold: minimum confidence for a box to be reported.
+
+        Raises:
+            FileNotFoundError: the checkpoint is not on disk.
+            RuntimeError: the checkpoint does not fit the architecture.
         """
-
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.score_threshold = score_threshold
+        self.class_names = dict(CLASS_NAMES)
 
-        # 1️⃣ Build model architecture
-        self.model = build_defect_model(num_classes, checkpoint_path)
-        self.model.to(self.device)
+        checkpoint_path = Path(checkpoint_path or DEFAULT_CHECKPOINT)
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Defect checkpoint not found: {checkpoint_path}\n"
+                "It is gitignored (*.pth). Copy it from "
+                "defects_3dataset/checkpoints/best_model.zip."
+            )
 
-        # 2️⃣ Load checkpoint safely
+        self.model = build_defect_model(num_classes)
+
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+            self.epoch = checkpoint.get("epoch")
+            self.f1 = checkpoint.get("f1")
+        else:
+            state_dict = checkpoint
+            self.epoch = None
+            self.f1 = None
 
-        try:
-            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-                self.model.load_state_dict(checkpoint["model_state_dict"])
-                self.class_names = checkpoint.get(
-                    "class_names",
-                    [f"class_{i}" for i in range(num_classes)]
-                )
-            else:
-                # Raw state_dict case
-                self.model.load_state_dict(checkpoint)
-                self.class_names = [f"class_{i}" for i in range(num_classes)]
+        # strict=True on purpose. A silent partial load is what made every
+        # previous prediction noise; a mismatch must be loud.
+        self.model.load_state_dict(state_dict, strict=True)
+        self.model.to(self.device)
+        self.model.eval()
 
-            self.model.eval()
-
-            print("✅ Defect model loaded successfully")
-            print(f"📌 Classes: {self.class_names}")
-            print(f"📌 Device: {self.device}")
-        except Exception as e:
-            print(f"⚠️  Architecture mismatch: {e}")
-            print("💡 Using randomly initialized model - retrain with correct architecture for best results")
-            # Keep the model as randomly initialized
-            self.class_names = [f"class_{i}" for i in range(num_classes)]
-            self.model.eval()
-            print(f"📌 Classes: {self.class_names}")
-            print(f"📌 Device: {self.device}")
+        print(f"[ok] Defect detector loaded: {checkpoint_path.name}")
+        print(f"     Architecture: Faster R-CNN ResNet50-FPN, {num_classes} classes")
+        if self.epoch is not None:
+            # Note: this f1 was computed class-agnostically by the training
+            # script (boxes matched by IoU, labels never compared), so it
+            # measures localisation only.
+            print(f"     Trained to epoch {self.epoch}, localisation f1 {self.f1:.4f}")
+        print(f"     Device: {self.device}")
 
     # --------------------------------------------------
-    # Inference
+    # Whole-frame detection (the model's native mode)
+    # --------------------------------------------------
+    def detect_frame(self, frame: np.ndarray) -> List[Dict]:
+        """
+        Find damage anywhere in the frame.
+
+        This is what the model was trained to do. It needs no prior object
+        detector.
+
+        Args:
+            frame: BGR image, as returned by cv2.
+
+        Returns:
+            A list of detections, each:
+                {id, class, class_id, confidence, bbox: [x1,y1,x2,y2],
+                 area, untrained_class}
+            sorted by confidence, highest first.
+        """
+        if frame is None or frame.size == 0:
+            return []
+
+        tensor = self._preprocess_frame(frame)
+
+        with torch.no_grad():
+            prediction = self.model([tensor])[0]
+
+        boxes = prediction["boxes"].cpu().numpy()
+        scores = prediction["scores"].cpu().numpy()
+        labels = prediction["labels"].cpu().numpy()
+
+        results = []
+        for idx, (box, score, label) in enumerate(zip(boxes, scores, labels)):
+            if score < self.score_threshold:
+                continue
+
+            x1, y1, x2, y2 = (float(v) for v in box)
+            class_id = int(label)
+
+            results.append({
+                "id": idx,
+                "class": self.class_names.get(class_id, f"class_{class_id}"),
+                "class_id": class_id,
+                "confidence": float(score),
+                "bbox": [x1, y1, x2, y2],
+                "area": (x2 - x1) * (y2 - y1),
+                # Flag rather than drop: the caller decides what to do with a
+                # prediction from a head that saw no training data.
+                "untrained_class": class_id in UNTRAINED_CLASS_IDS,
+            })
+
+        results.sort(key=lambda d: d["confidence"], reverse=True)
+        return results
+
+    # --------------------------------------------------
+    # ROI-scoped detection (pipeline compatibility)
     # --------------------------------------------------
     def detect(self, frame: np.ndarray, detections: List[Dict]) -> Dict:
         """
-        Run defect detection on YOLO-detected objects
+        Report damage within regions another detector already found.
+
+        Kept so the existing pipeline, which passes YOLO boxes, still works.
+        Prefer detect_frame() — running the detector on the whole frame is both
+        faster and more accurate than cropping first, because cropping discards
+        the surrounding context the model was trained on.
 
         Args:
             frame: BGR image
-            detections: YOLO detections list
+            detections: upstream detections, each with a "bbox" and an "id"
 
         Returns:
-            Dictionary with defect results per object
+            {"objects": {obj_id: {predicted_class, class_id, confidence,
+                                  has_defect, bbox, untrained_class}}}
         """
+        results: Dict[str, Dict] = {"objects": {}}
 
-        results = {"objects": {}}
+        if frame is None or frame.size == 0:
+            return results
+
+        height, width = frame.shape[:2]
 
         for det in detections:
             obj_id = det["id"]
-            x1, y1, x2, y2 = map(int, det["bbox"])
+            x1, y1, x2, y2 = (int(v) for v in det["bbox"])
+
+            # Clamp to the frame; an out-of-bounds slice yields an empty array.
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(width, x2), min(height, y2)
+            if x2 <= x1 or y2 <= y1:
+                continue
 
             roi = frame[y1:y2, x1:x2]
-
             if roi.size == 0:
                 continue
 
-            tensor = self._preprocess(roi)
+            found = self.detect_frame(roi)
+            if not found:
+                continue
 
-            with torch.no_grad():
-                logits = self.model(tensor)
-                probs = torch.softmax(logits, dim=1)
-                conf, cls_id = torch.max(probs, dim=1)
-
-            class_id = int(cls_id.item())
-            confidence = float(conf.item())
-
+            best = found[0]
             results["objects"][obj_id] = {
-                "predicted_class": self.class_names[class_id],
-                "class_id": class_id,
-                "confidence": confidence,
-                "has_defect": self.class_names[class_id] != "normal"
+                "predicted_class": best["class"],
+                "class_id": best["class_id"],
+                "confidence": best["confidence"],
+                # Every trained class is a kind of damage; there is no "normal"
+                # class in either source dataset. A detection at all means
+                # damage was found.
+                "has_defect": True,
+                # Translate the ROI-local box back into frame coordinates.
+                "bbox": [
+                    best["bbox"][0] + x1, best["bbox"][1] + y1,
+                    best["bbox"][2] + x1, best["bbox"][3] + y1,
+                ],
+                "untrained_class": best["untrained_class"],
             }
 
         return results
@@ -152,17 +292,21 @@ class DefectDetector:
     # --------------------------------------------------
     # Preprocessing
     # --------------------------------------------------
-    def _preprocess(self, roi: np.ndarray) -> torch.Tensor:
+    def _preprocess_frame(self, frame: np.ndarray) -> torch.Tensor:
         """
-        Converts ROI to model input tensor
+        BGR uint8 image -> CHW float tensor in [0, 1].
+
+        Matches DefectDataset.__getitem__ in the training script: RGB, scaled by
+        1/255, no resize and no mean/std normalisation (Faster R-CNN does its
+        own resizing and normalisation internally).
         """
+        # A 2-D frame reaches here when ImageProcessor runs with
+        # enhance_contrast=False; promote it rather than letting cvtColor raise.
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
-        roi = cv2.resize(roi, (224, 224))
-        roi = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-        roi = roi.astype(np.float32) / 255.0
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = rgb.astype(np.float32) / 255.0
+        chw = np.transpose(rgb, (2, 0, 1))
 
-        roi = np.transpose(roi, (2, 0, 1))  # HWC → CHW
-        tensor = torch.from_numpy(roi).unsqueeze(0)
-        tensor = tensor.to(self.device)
-
-        return tensor
+        return torch.from_numpy(chw).to(self.device)

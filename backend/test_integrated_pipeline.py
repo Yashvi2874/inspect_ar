@@ -13,6 +13,15 @@ import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+# Paths are anchored to this file, not to the caller's working directory. The
+# docs say to run this from backend/, but these paths used to be written
+# repo-root-relative ("backend/models"), so from backend/ they resolved to
+# backend/backend/models: the model folder was missing, the dataset was not
+# found, and the output directory raised FileNotFoundError.
+BACKEND_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BACKEND_DIR.parent
+DATASET_DIR = REPO_ROOT / "aircraft_damage_dataset_v1"
+
 from integrated_inspection_pipeline import IntegratedInspectionPipeline
 
 
@@ -38,16 +47,19 @@ def test_pipeline():
     print("="*70 + "\n")
     
     # Initialize pipeline
-    print("🚀 Initializing pipeline...")
+    print("Initializing pipeline...")
     pipeline = IntegratedInspectionPipeline(
-        models_folder=Path("backend/models"),
-        use_vgg16=True,
-        use_blip=True,
+        models_folder=BACKEND_DIR / "models",
+        use_defect_detector=True,   # the trained Faster R-CNN
+        use_vgg16=False,            # no trained weights exist for it
+        # BLIP needs a ~1 GB download and a lot of RAM. Set INSPECT_AR_NO_BLIP=1
+        # to skip it on an offline or memory-constrained machine.
+        use_blip=os.environ.get("INSPECT_AR_NO_BLIP") != "1",
         use_dimensions=True
     )
-    
+
     # Find sample images
-    dataset_path = Path("aircraft_damage_dataset_v1/test")
+    dataset_path = DATASET_DIR / "test"
     if not dataset_path.exists():
         print(f"⚠️ Dataset not found at {dataset_path}")
         print("📌 Using a test image instead...")
@@ -83,11 +95,20 @@ def test_pipeline():
             print(f"⚠️ Could not load image: {image_name}")
             continue
         
-        print(f"📷 Image: {image_name}")
-        print(f"📏 Size: {frame.shape[1]}x{frame.shape[0]}")
-        
+        print(f"Image: {image_name}")
+        print(f"Size: {frame.shape[1]}x{frame.shape[0]}")
+
+        # Calibrate before measuring. Without this, pixel_to_mm_ratio stays None
+        # and step 4 is skipped on every frame, so a test that asks for
+        # show_dimensions=True exercises no dimension code at all.
+        # These dataset images contain no ArUco marker, so calibration is
+        # expected to fail here; the test then states plainly that dimensions
+        # are unavailable rather than silently reporting pixels as millimetres.
+        if not pipeline.calibrate(frame, marker_size_mm=50.0):
+            print("   No ArUco marker in this image - dimensions unavailable.")
+
         # Process frame
-        print("\n🔄 Processing frame...")
+        print("\nProcessing frame...")
         start = time.time()
         results = pipeline.process_frame(frame, conf_threshold=0.25)
         elapsed = time.time() - start
@@ -109,8 +130,8 @@ def test_pipeline():
         )
         
         # Save output
-        output_path = Path("backend/test_output") / f"result_{idx}.jpg"
-        output_path.parent.mkdir(exist_ok=True)
+        output_path = BACKEND_DIR / "test_output" / f"result_{idx}.jpg"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_path), output_frame)
         print(f"✅ Result saved to {output_path}")
         
@@ -150,7 +171,7 @@ def test_real_time_video():
     # Initialize pipeline
     print("🚀 Initializing pipeline...")
     pipeline = IntegratedInspectionPipeline(
-        models_folder=Path("backend/models"),
+        models_folder=BACKEND_DIR / "models",
         use_vgg16=True,
         use_blip=False,  # Disable BLIP for real-time (slower)
         use_dimensions=True

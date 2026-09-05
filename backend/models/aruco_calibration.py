@@ -80,19 +80,31 @@ class ArucoCalibrator:
     
     def detect_and_calibrate(self, image: np.ndarray, marker_size_mm: float = 50.0) -> Dict:
         """
-        Detect markers and return calibration data
+        Detect markers and return calibration data.
+
+        The returned dict ALWAYS carries a 'success' key. Check it before using
+        'pixel_to_mm_ratio'.
+
+        This used to return a ratio of 1.0 on failure while dropping the
+        success flag, so callers that merely checked for the key's presence
+        reported "calibration successful" and then labelled raw pixel counts as
+        millimetres. On failure the ratio is now None, which makes any attempt
+        to compute with it fail loudly instead of silently producing numbers
+        that look plausible.
         """
         result = self.calibrate(image, marker_size_mm)
         if result['success']:
             return {
+                'success': True,
                 'marker_count': result['marker_count'],
                 'pixel_to_mm_ratio': result['calibration']['pixel_to_mm_ratio'],
                 'reference_size_mm': result['reference_size_mm']
             }
         else:
-            # Return default values when calibration fails
             return {
+                'success': False,
+                'error': result.get('error', 'Calibration failed'),
                 'marker_count': 0,
-                'pixel_to_mm_ratio': 1.0,  # Default fallback
+                'pixel_to_mm_ratio': None,
                 'reference_size_mm': marker_size_mm
             }

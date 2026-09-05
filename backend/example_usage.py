@@ -4,11 +4,21 @@ Simple example usage of the integrated inspection pipeline
 
 import cv2
 import os
+import numpy as np
 from pathlib import Path
 
 # Suppress warnings
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+# Paths are anchored to this file, not to the caller's working directory. The
+# docs say to run this from backend/, but these paths used to be written
+# repo-root-relative ("backend/models"), so from backend/ they resolved to
+# backend/backend/models: the model folder was missing, the dataset was not
+# found, and the output directory raised FileNotFoundError.
+BACKEND_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BACKEND_DIR.parent
+DATASET_DIR = REPO_ROOT / "aircraft_damage_dataset_v1"
 
 from integrated_inspection_pipeline import IntegratedInspectionPipeline
 
@@ -23,7 +33,7 @@ def example_1_basic_usage():
     pipeline = IntegratedInspectionPipeline()
     
     # Load image
-    image_path = "aircraft_damage_dataset_v1/test/dent/144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg"
+    image_path = str(DATASET_DIR / "test" / "dent" / "144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg")
     if not Path(image_path).exists():
         print(f"⚠️ Image not found: {image_path}")
         return
@@ -48,7 +58,7 @@ def example_2_with_visualization():
     pipeline = IntegratedInspectionPipeline()
     
     # Load image
-    image_path = "aircraft_damage_dataset_v1/test/dent/144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg"
+    image_path = str(DATASET_DIR / "test" / "dent" / "144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg")
     if not Path(image_path).exists():
         print(f"⚠️ Image not found: {image_path}")
         return
@@ -77,7 +87,7 @@ def example_3_fast_mode():
     pipeline = IntegratedInspectionPipeline(use_blip=False)
     
     # Load image
-    image_path = "aircraft_damage_dataset_v1/test/dent/144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg"
+    image_path = str(DATASET_DIR / "test" / "dent" / "144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg")
     if not Path(image_path).exists():
         print(f"⚠️ Image not found: {image_path}")
         return
@@ -103,7 +113,7 @@ def example_4_with_calibration():
     pipeline = IntegratedInspectionPipeline(use_blip=False)
     
     # Load image
-    image_path = "aircraft_damage_dataset_v1/test/dent/144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg"
+    image_path = str(DATASET_DIR / "test" / "dent" / "144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg")
     if not Path(image_path).exists():
         print(f"⚠️ Image not found: {image_path}")
         return
@@ -123,9 +133,9 @@ def example_4_with_calibration():
             print("\n📏 Dimensions:")
             for obj_id, dims in results['dimensions'].items():
                 print(f"  Object {obj_id}:")
-                print(f"    Width: {dims.get('width', 0):.1f}mm")
-                print(f"    Height: {dims.get('height', 0):.1f}mm")
-                print(f"    Area: {dims.get('area', 0):.1f}mm²")
+                print(f"    Width: {dims.get('width_mm', 0):.1f}mm")
+                print(f"    Height: {dims.get('height_mm', 0):.1f}mm")
+                print(f"    Area: {dims.get('area_mm2', 0):.1f}mm²")
         else:
             print("⚠️ No dimensions measured")
     else:
@@ -142,7 +152,7 @@ def example_5_batch_processing():
     pipeline = IntegratedInspectionPipeline(use_blip=False)
     
     # Find images
-    dataset_path = Path("aircraft_damage_dataset_v1/test")
+    dataset_path = DATASET_DIR / "test"
     if not dataset_path.exists():
         print(f"⚠️ Dataset not found: {dataset_path}")
         return
@@ -176,7 +186,7 @@ def example_6_custom_configuration():
     
     # Initialize with custom settings
     pipeline = IntegratedInspectionPipeline(
-        models_folder=Path("backend/models"),
+        models_folder=BACKEND_DIR / "models",
         use_vgg16=True,      # Enable defect detection
         use_blip=False,      # Disable for speed
         use_dimensions=True  # Enable measurements
@@ -188,7 +198,7 @@ def example_6_custom_configuration():
     print("   - Dimension measurement: ENABLED")
     
     # Load image
-    image_path = "aircraft_damage_dataset_v1/test/dent/144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg"
+    image_path = str(DATASET_DIR / "test" / "dent" / "144_10_JPG_jpg.rf.4d008cc33e217c1606b76585469d626b.jpg")
     if not Path(image_path).exists():
         print(f"⚠️ Image not found: {image_path}")
         return
@@ -241,7 +251,6 @@ def example_7_error_handling():
 
 
 if __name__ == "__main__":
-    import numpy as np
     
     print("\n" + "="*70)
     print("INTEGRATED INSPECTION PIPELINE - EXAMPLES")

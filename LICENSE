@@ -1,3 +1,23 @@
+INSPECT-AR
+
+Scope of this licence
+---------------------
+This MIT licence applies to the original code of the INSPECT-AR project —
+the contents of backend/ and docs/ authored by the project's contributors.
+
+It does NOT apply to third-party components, which carry their own terms and
+are not relicensed here:
+
+  * Ultralytics YOLOv8, imported at runtime  — AGPL-3.0
+  * Roboflow Universe damage datasets        — CC BY 4.0 (attribution required)
+  * The VGG16 / BLIP training notebooks      — IBM Skills Network lab material,
+    no licence published upstream; not redistributed in this repository.
+  * Model checkpoints (*.pth, *.pt)          — not distributed with this repo.
+
+See the Acknowledgements section of README.md for full attribution.
+
+--------------------------------------------------------------------------
+
 MIT License
 
 Copyright (c) 2026 Yashvi
