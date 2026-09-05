@@ -7,6 +7,11 @@ pillow>=10.1.0
 # YOLO
 ultralytics>=8.0.220
 
+# Deep Learning
+tensorflow>=2.13.0
+torch>=2.0.0
+transformers>=4.38.0
+
 # Data Processing
 pandas>=2.1.0
 

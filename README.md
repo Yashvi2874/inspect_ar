@@ -1,54 +1,191 @@
-<div  align="center">
-  
-# INSPECT-AR  
-**AI-Powered Industrial Object Inspection System**  
-From Manual Inspection to AI Inspector
-![WhatsApp Image 2026-01-10 at 10 57 53](https://github.com/user-attachments/assets/37184715-7663-4e66-92bd-a9b3a7ec6347)
+# INSPECT-AR — AI-Assisted Aircraft Damage Inspection
 
-</div>
+Computer-vision prototype for aircraft surface inspection: measure the physical
+dimensions of a region of interest using an ArUco reference marker, and
+classify/caption aircraft damage from photographs.
 
-<p align="center">
-  <strong>HAL Aerospace Challenge — Aerothon Hackathon</strong><br>
-  <strong>Team ZENITH</strong> — KJ Somaiya College of Engineering
-</p>
+> **Status: work-in-progress prototype.** The dimension-measurement app works.
+> The defect-classification and integrated-pipeline paths do **not** currently run
+> end to end. See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) before relying on
+> any output — it lists every known defect with file and line references.
 
-![WhatsApp Image 2026-01-08 at 17 17 02](https://github.com/user-attachments/assets/d0c6370f-2672-4198-9f87-c6644fe6cd58)
+---
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Hackathon-HAL%20Aerothon-blue?style=for-the-badge" alt="HAL Aerothon">
-  <img src="https://img.shields.io/badge/Status-Prototype-success?style=for-the-badge" alt="Status">
-  <img src="https://img.shields.io/badge/FPS-15%2B-green?style=for-the-badge" alt="Performance">
-</p>
+## What actually works today
 
-## Abstract
+| Capability | State | Notes |
+|---|---|---|
+| ArUco calibration (px → mm) | **Working** | 0.14% error against a synthetic ground-truth marker |
+| Standalone dimension app | **Working** | `backend/industrial_measurement.py`, needs a webcam + printed marker |
+| YOLO object detection | **Runs, wrong domain** | Stock COCO weights — no aircraft-damage classes |
+| VGG16 defect classification | **Broken** | Crashes on `tf.no_grad()`; no trained weights exist in the repo |
+| BLIP captioning | **Runs, not fine-tuned** | Generic pretrained captions, ~1 GB download on first use |
+| Integrated pipeline | **Broken** | Cannot be imported; see Known Issues #1 |
 
-**INSPECT-AR** is a real-time, mobile-assisted AI-powered quality inspection prototype developed specifically for aerospace component manufacturing under the HAL Aerothon challenge.
+---
 
-The system combines classical computer vision with modern deep learning to deliver:
+## Repository layout
 
-- Real-time anomaly & defect detection
-- High-precision dimension measurement (±1–2 mm tolerance)
-- Live visual feedback with AR-style overlays at **15+ FPS**
-- Exportable inspection reports (CSV/JSON)
+```
+inspect_ar/
+├── README.md
+├── LICENSE
+├── requirements.txt
+├── backend/
+│   ├── industrial_measurement.py       # standalone ArUco measurement app (works)
+│   ├── integrated_inspection_pipeline.py
+│   ├── test_integrated_pipeline.py
+│   ├── example_usage.py
+│   ├── models/
+│   │   ├── yolo_detector.py            # YOLOv8 + contour fallback
+│   │   ├── aruco_calibration.py        # marker detection → mm/px ratio
+│   │   ├── dimension_detector.py       # contour → dimensions
+│   │   ├── vgg16_wrapper.py            # Keras defect classifier
+│   │   ├── defect_detector.py          # PyTorch classifier (unused)
+│   │   └── blip_wrapper.py             # BLIP captioner
+│   └── utils/image_processor.py
+├── notebooks/
+│   ├── Defect-Detection-of-Aircraft.ipynb
+│   ├── Captioning-of-Aircraft-Images.ipynb
+│   └── executed_Defect-Detection-of-Aircraft.ipynb
+├── docs/
+│   ├── ARCHITECTURE.md
+│   └── KNOWN_ISSUES.md
+└── aircraft_damage_dataset_v1/         # not in git — see .gitkeep
+```
 
-Built using a smartphone camera (via IP Webcam), ArUco markers for accurate dimensioning & orientation, YOLO for fast component localization, and Faster R-CNN for detailed defect classification — INSPECT-AR offers a practical, low-cost solution to transition from error-prone manual inspection to consistent, explainable, AI-augmented quality control.
+---
 
-## Hackathon Objectives (Achieved ✅)
+## Setup
 
-1. Detect anomalies & defects with intuitive visual feedback  
-2. Perform real-time size measurement from live video stream (±1–2 mm accuracy)  
-3. Deliver a fully working prototype with ≥15 FPS processing speed
+```bash
+git clone https://github.com/Yashvi2874/inspect_ar.git
+cd inspect_ar
 
-## Solution Architecture — Core Functional Modules
+python -m venv venv
+venv\Scripts\activate          # Windows
+# source venv/bin/activate     # Linux / macOS
 
-```mermaid
-graph TD
-    A[Smartphone Camera<br>IP Webcam MJPEG Stream] --> B[Live Video Feed]
-    B --> C[YOLOv8<br>Component Localization & Missing Parts]
-    B --> D[ArUco Marker Detection<br>Pose Estimation + PnP]
-    D --> E[Pixel-to-mm Calibration<br>Dimension Measurement ±1-2mm]
-    B --> F[Faster R-CNN<br>Multi-class Defect Classification]
-    C --> G[Real-time Overlays<br>Bounding Boxes + Dimensions]
-    F --> G
-    E --> G
-    G --> H[Inspection Report<br>CSV / JSON Export]
+pip install -r requirements.txt
+```
+
+`opencv-contrib-python` is required — the ArUco module is not in the base
+`opencv-python` package.
+
+On Windows, run with UTF-8 output or the emoji in the console messages will
+raise `UnicodeEncodeError` under the default cp1252 codepage:
+
+```bash
+set PYTHONIOENCODING=utf-8
+```
+
+### Model weights
+
+Nothing large is committed to git.
+
+- **YOLOv8n** — downloaded automatically by `ultralytics` on first run.
+- **BLIP** — downloaded automatically from Hugging Face on first run (~1 GB).
+- **`backend/models/best_model.pth`** — a Faster R-CNN checkpoint that is **not**
+  loadable by either wrapper in this repo. See Known Issues #4.
+
+### Dataset
+
+Binary `dent` / `crack` image folders, ~446 images:
+
+```
+aircraft_damage_dataset_v1/{train,valid,test}/{dent,crack}/
+```
+
+Downloaded by the first cells of
+[notebooks/Defect-Detection-of-Aircraft.ipynb](notebooks/Defect-Detection-of-Aircraft.ipynb).
+
+---
+
+## Running
+
+### Dimension measurement (the working path)
+
+```bash
+cd backend
+python industrial_measurement.py
+```
+
+Answer the two console prompts (marker size, ArUco dictionary), hold a printed
+marker in view to calibrate, then measure objects beside it.
+
+| Key | Action |
+|---|---|
+| `q` | quit |
+| `s` | save screenshot |
+| `c` | toggle contrast enhancement |
+| `r` | reset calibration |
+| `u` | unlock locked objects |
+| `f` | freeze frame |
+
+Requires a webcam and a display — it is an interactive OpenCV GUI app, not a library.
+
+### Integrated pipeline
+
+```bash
+cd backend
+python test_integrated_pipeline.py 1
+```
+
+**This does not currently work.** It fails at import. The fixes required are
+enumerated in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
+
+### Training the defect classifier
+
+```bash
+jupyter notebook notebooks/Defect-Detection-of-Aircraft.ipynb
+```
+
+Transfer-learns a frozen ImageNet VGG16 with a small dense head, 5 epochs,
+binary `crack` vs `dent`. **The notebook does not save the model** — add a
+`model.save()` call at the end if you want a reusable checkpoint.
+
+---
+
+## Measured results
+
+From the executed notebook and from instrumented runs — not estimates.
+
+| Metric | Value | Source |
+|---|---|---|
+| Defect classifier, test accuracy | **0.6875** | `executed_…ipynb`, 50-image test set |
+| Defect classifier, best val accuracy | 0.72 | same, epoch 1 of 5 |
+| Defect classifier, final train accuracy | 0.88 | same, epoch 5 |
+| ArUco calibration error | 0.14% | synthetic 100 px = 50 mm marker |
+| Pipeline throughput (all stages, CPU) | 0.13–0.24 FPS | 640×640 images, no GPU |
+| Dataset size | 300 train / 96 valid / 50 test | `flow_from_directory` output |
+
+The train/test gap (0.88 vs 0.69) indicates overfitting on a small dataset.
+
+---
+
+## Roadmap
+
+The prototype's central limitation is that **no model in this repo is trained to
+find aircraft damage**. Object detection uses stock COCO weights. In priority order:
+
+- [ ] Fix the blocking defects in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)
+- [ ] Train a real damage detector (YOLOv8 on annotated damage boxes)
+- [ ] Persist the classifier from the notebook and load it correctly
+- [ ] Expand the dataset well beyond 446 images
+- [ ] Fine-tune BLIP on damage descriptions
+- [ ] Damage severity scoring
+- [ ] Web UI / REST API
+
+---
+
+## Acknowledgements
+
+YOLO — [Ultralytics](https://github.com/ultralytics/ultralytics) ·
+VGG16 — [Keras Applications](https://keras.io/api/applications/) ·
+BLIP — [Salesforce Research](https://github.com/salesforce/BLIP) ·
+ArUco — [OpenCV](https://docs.opencv.org/) ·
+Dataset — IBM / Roboflow aircraft damage set
+
+## License
+
+MIT — see [LICENSE](LICENSE).

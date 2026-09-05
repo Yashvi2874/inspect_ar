@@ -1,0 +1,24 @@
+# INSPECT-AR dependencies
+# Versions below are the ones the project has actually been run against.
+
+# Core CV
+opencv-python==4.11.0.86
+opencv-contrib-python==4.11.0.86   # required for cv2.aruco
+numpy==1.26.4
+pillow>=10.1.0
+
+# Object detection
+ultralytics==8.0.220
+
+# Defect classification (Keras/TF path used by the pipeline)
+tensorflow==2.17.1
+
+# Captioning + the PyTorch checkpoint loader
+torch==2.1.0
+torchvision==0.16.0
+transformers==4.35.0
+
+# Notebooks / analysis
+pandas>=2.1.0
+matplotlib>=3.8.0
+tqdm>=4.66.0

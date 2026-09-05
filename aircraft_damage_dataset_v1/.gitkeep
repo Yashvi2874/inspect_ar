@@ -1,0 +1,14 @@
+# This directory should contain the aircraft damage dataset
+# Download from: https://universe.roboflow.com/youssef-donia-fhktl/aircraft-damage-detection-1j9qk
+# 
+# Structure:
+# aircraft_damage_dataset_v1/
+# ├── train/
+# │   ├── dent/
+# │   └── crack/
+# ├── valid/
+# │   ├── dent/
+# │   └── crack/
+# └── test/
+#     ├── dent/
+#     └── crack/

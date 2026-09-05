@@ -1,24 +1,86 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+*.egg
 
-node_modules
-dist
-dist-ssr
-*.local
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# IDE / OS / tooling
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Notebooks are NOT redistributed with this repository.
+# Defect-Detection-of-Aircraft.ipynb and Captioning-of-Aircraft-Images.ipynb are
+# third-party: they originate as IBM Skills Network guided-lab material and were
+# obtained via github.com/asitdave/Aircraft-Defect-Detection-and-Automated-Image-Captioning,
+# which publishes no licence, so no redistribution right was granted.
+# They are kept locally for reference and credited in the README instead.
+# Nothing in backend/ imports them.
+notebooks/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# Model weights — too large for git, fetched or trained locally.
+# See docs/KNOWN_ISSUES.md for what each weight file is.
+*.pth
+*.pt
+*.h5
+*.keras
+*.weights.h5
+*.onnx
+*.pb
+
+# Dataset — download separately, see aircraft_damage_dataset_v1/.gitkeep
+# NOTE: must be `dir/*` not `dir/`, otherwise git never descends into the
+# directory and the .gitkeep negation below can never match.
+aircraft_damage_dataset_v1/*
+!aircraft_damage_dataset_v1/.gitkeep
+
+# Notebook HTML exports (regenerate with `jupyter nbconvert`)
+*.html
+
+# Run outputs
+test_output/
+results/
+output/
+example_output.jpg
+industrial_measurement_*.jpg
+
+# Env / cache
+.env
+.env.local
+.cache/
+*.cache
+*.tmp
+*.temp
+
+# Backups
+*.bak
+*.backup
+*copy*

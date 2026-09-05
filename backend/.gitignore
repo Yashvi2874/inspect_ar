@@ -1,24 +1,12 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# Backend-specific ignores. Root .gitignore covers the rest.
 
-node_modules
-dist
-dist-ssr
-*.local
+# Run outputs
+test_output/
+industrial_measurement_*.jpg
+example_output.jpg
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# Downloaded / trained weights (also covered at root)
+*.pt
+*.pth
+*.keras
+*.weights.h5
