@@ -33,13 +33,23 @@ What this script changes
 
 Running it
 ----------
-This is a GPU job. On CPU it is impractically slow -- roughly 5,600 images per
+This is a GPU job. On CPU it is impractically slow -- 5,295 training images per
 epoch through a ResNet50-FPN.
 
-    python backend/training/train_detector.py --epochs 25 --batch-size 4
+    python backend/training/train_detector.py --epochs 25 --batch-size 6
 
-On Google Colab, mount the dataset and point --data at it. Check the device
-line in the output says cuda before leaving it running.
+Measured on an RTX 4070 Laptop (8 GB): 0.51 s/step at batch 6 and 640px, which
+is about 7.5 minutes per epoch and 2.8 GB of VRAM. A full 25-epoch run is
+therefore roughly three hours on that class of card.
+
+Note the --img-size default of 640. torchvision's detector resizes its input to
+800px by default, which UPSCALES this dataset and buys nothing: v2 is 640x640
+and v4 is smaller. Running at 640 measured 3x faster on less than half the
+VRAM.
+
+If you would rather not install CUDA locally, this runs unchanged on Google
+Colab -- mount the dataset and point --data at it. Either way, check that the
+device line in the output says cuda before leaving it running.
 """
 
 import argparse
@@ -255,6 +265,11 @@ def main():
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=0.005)
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--img-size", type=int, default=640,
+                    help="resolution the detector runs at. torchvision defaults "
+                         "to 800, which UPSCALES this dataset (v2 is 640x640, v4 "
+                         "smaller) and buys nothing. Measured on an RTX 4070: 640 "
+                         "is 3x faster and uses less than half the VRAM.")
     ap.add_argument("--out", type=Path,
                     default=BACKEND_DIR / "models" / "detector_remapped.pth")
     args = ap.parse_args()
@@ -266,6 +281,7 @@ def main():
         print("         CPU will take many hours. Consider Colab.")
 
     print(f"Label space ({NUM_CLASSES} classes): {CLASS_NAMES}")
+    print(f"Detector resolution: {args.img_size}px, batch {args.batch_size}")
 
     train_ds = build_splits(args.data, "train")
     val_ds = build_splits(args.data, "valid")
@@ -277,7 +293,10 @@ def main():
                             collate_fn=collate_fn, num_workers=args.workers)
 
     # COCO-pretrained weights, then a head sized to OUR label space.
-    model = fasterrcnn_resnet50_fpn(weights="DEFAULT")
+    # min_size/max_size pin the internal resize to the data's own resolution.
+    model = fasterrcnn_resnet50_fpn(weights="DEFAULT",
+                                    min_size=args.img_size,
+                                    max_size=args.img_size)
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, NUM_CLASSES)
     model.to(device)
