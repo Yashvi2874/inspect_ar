@@ -111,7 +111,14 @@ class IntegratedInspectionPipeline:
             # (A native crash from an out-of-memory load cannot be caught here;
             # if the process dies outright, run with use_blip=False.)
             try:
-                self.blip_captioner = BLIPCaptioner()
+                captioner = BLIPCaptioner()
+                # A captioner whose weights did not load returns the string
+                # "Model not loaded" for every region. Dropping it here means
+                # the captioning step is skipped cleanly rather than filling
+                # the results with placeholder text.
+                self.blip_captioner = captioner if captioner.available else None
+                if self.blip_captioner is None:
+                    print("  [warn] BLIP did not load; captions disabled")
             except Exception as e:
                 print(f"  [warn] BLIP unavailable, captions disabled: {e}")
                 self.blip_captioner = None

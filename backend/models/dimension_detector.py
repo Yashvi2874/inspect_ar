@@ -16,7 +16,47 @@ class DimensionDetector:
         """
         self.models_folder = models_folder
         print("DimensionDetector initialized")
-        
+
+    @staticmethod
+    def _binarise(gray: np.ndarray) -> np.ndarray:
+        """
+        Threshold a ROI so the OBJECT becomes white, whichever way round it is.
+
+        Otsu splits the histogram into two groups but says nothing about which
+        group is the object. Plain THRESH_BINARY always keeps the brighter
+        group, so a dark part on a light panel — the common case on aircraft
+        skin — makes the BACKGROUND the largest contour, and the measurement
+        describes the panel instead of the part.
+
+        Polarity is decided by comparing the ROI's border with its centre. The
+        detection box is drawn around the object, so the centre is the object
+        and the border ring is mostly background. If the centre is darker than
+        the border, the object is dark and the threshold is inverted.
+        """
+        h, w = gray.shape[:2]
+        if h < 8 or w < 8:
+            # Too small to sample a border ring meaningfully; keep it simple.
+            _, binary = cv2.threshold(gray, 0, 255,
+                                      cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            return binary
+
+        # Border ring: the outer eighth on each side.
+        by, bx = max(1, h // 8), max(1, w // 8)
+        border = np.concatenate([
+            gray[:by, :].ravel(), gray[-by:, :].ravel(),
+            gray[:, :bx].ravel(), gray[:, -bx:].ravel(),
+        ])
+        centre = gray[h // 4:3 * h // 4, w // 4:3 * w // 4]
+
+        object_is_dark = float(centre.mean()) < float(border.mean())
+        mode = cv2.THRESH_BINARY_INV if object_is_dark else cv2.THRESH_BINARY
+
+        _, binary = cv2.threshold(gray, 0, 255, mode | cv2.THRESH_OTSU)
+
+        # Close pinholes so one object yields one contour rather than several.
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
     def measure(self, image: np.ndarray, detections: List[Dict], pixel_to_mm_ratio: float) -> Dict:
         """
         Measure dimensions of detected objects
@@ -33,11 +73,13 @@ class DimensionDetector:
                 # Get the region of interest
                 roi = image[int(y1):int(y2), int(x1):int(x2)]
                 
-                # Convert to grayscale for contour detection
-                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                # Convert to grayscale for contour detection. The ROI is already
+                # 2-D when ImageProcessor ran with enhance_contrast=False, and
+                # cvtColor raises on that rather than passing it through.
+                gray = roi if roi.ndim == 2 else cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
                 
-                # Apply threshold to get binary image
-                _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                # Threshold so the object is white regardless of polarity.
+                binary = self._binarise(gray)
                 
                 # Find contours
                 contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

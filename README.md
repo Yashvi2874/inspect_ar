@@ -57,8 +57,8 @@ with the commands in [Running](#running).
 | Anomaly autoencoder + heatmap | **Working** | Unsupervised; defect regions score 1.7× clean skin |
 | Integrated pipeline | **Working** | ~1.8–2.0 s per 640×640 frame, CPU-only |
 | HTTP API | **Working** | 5 endpoints, `backend/app.py` |
-| Dimension measurement | **Working, with a caveat** | Accurate for bright-on-dark; up to ~25% error on dark-on-light (see [Known Issues](docs/KNOWN_ISSUES.md)) |
-| BLIP captioning | **Disabled** | ~1 GB download, and it segfaults on load here. Run with `INSPECT_AR_NO_BLIP=1` |
+| Dimension measurement | **Working** | Polarity-aware thresholding: 0.3% / 0.6% error on both dark-on-light and bright-on-dark |
+| BLIP captioning | **Working** | Needs ~2 GB free RAM; skips itself cleanly below that. Captions are generic — the model is not fine-tuned on damage |
 | VGG16 classifier | **Legacy, off by default** | No trained Keras checkpoint exists anywhere in the project |
 | YOLOv8 | **Off by default** | Ships stock COCO weights, which have no damage classes |
 
@@ -173,14 +173,15 @@ pip install -r requirements.txt
 `opencv-contrib-python` is required — `cv2.aruco` is not in the base
 `opencv-python` package.
 
-### Two mandatory Windows settings
-
-Both of these are required, not advisory:
+### Windows console encoding
 
 ```bash
 set PYTHONIOENCODING=utf-8      # without it, console output can die on encoding
-set INSPECT_AR_NO_BLIP=1        # without it, BLIP can crash the process outright
 ```
+
+Optionally, `set INSPECT_AR_NO_BLIP=1` skips captioning entirely. It is not
+required — BLIP checks available memory and stands itself down when there is
+too little, rather than crashing.
 
 ### Model weights
 
@@ -270,25 +271,25 @@ Harvests defect-free patches automatically and writes
 Found by auditing our own code after the hackathon. Full detail with file and
 line references in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
-- The detector's class labels are unreliable; two of its eight classes were
-  never trained yet still fire.
-- Dimension measurement uses a non-inverted threshold, so it is polarity
-  sensitive — accurate for bright objects on dark ground, poor in reverse.
+- The shipped detector's class labels are unreliable: two of its eight classes
+  were never trained yet still fire. `backend/training/train_detector.py`
+  fixes the cause and is ready to run, but needs a GPU.
 - Preprocessing converts to grayscale and back, discarding colour for every
   stage except the detector, which runs on the original frame.
-- `industrial_measurement.py` has no `if __name__ == "__main__":` guard, so it
-  cannot be imported or tested headlessly.
-- Pose-derived distance and tilt use placeholder camera intrinsics.
-- BLIP captioning segfaults on load in this environment.
+- Pose-derived distance and tilt use placeholder camera intrinsics. The
+  pixel-to-mm scale does not, which is why 0.14% still holds.
+- BLIP captions are generic. It is stock `blip-image-captioning-base`, never
+  fine-tuned on damage, so it describes the picture rather than the defect.
+- The anomaly autoencoder over-fires on rough texture.
 
 ---
 
 ## Roadmap
 
-- [ ] Retrain the detector with the category-ID collision fixed and a
-      class-aware metric
-- [ ] Wrap the standalone app in a `main()` behind a `__main__` guard
-- [ ] Fix the dimension threshold polarity
+- [ ] Run `backend/training/train_detector.py` on a GPU to replace the
+      shipped checkpoint (the collision fix and class-aware metric are written
+      and tested; only the training run remains)
+- [ ] Fine-tune BLIP on damage descriptions so captions are about the defect
 - [ ] OCR for part traceability — read serial numbers and stencilled IDs so
       every detection is logged against the component it belongs to
 - [ ] UAV-mounted capture

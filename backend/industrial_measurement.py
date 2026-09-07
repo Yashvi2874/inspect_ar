@@ -25,27 +25,59 @@ ARUCO_DICTS = {
 # Available marker sizes
 MARKER_SIZES = [47, 50, 40, 30]  # mm
 
-# Print available marker sizes
-print("Available ArUco marker sizes:")
-for i, size in enumerate(MARKER_SIZES, 1):
-    print(f"  {i}. {size}x{size}mm")
-
-# Get marker size from user
-print("\nEnter marker size (1-4, default: 1 for 47x47mm): ", end="")
-size_input = input().strip()
-size_choice = int(size_input) if size_input.isdigit() and 1 <= int(size_input) <= len(MARKER_SIZES) else 1
-KNOWN_MARKER_SIZE_MM = MARKER_SIZES[size_choice - 1]
-
-# Print available dictionaries
-print("\nAvailable ArUco dictionaries:")
-for i, (name, _) in enumerate(ARUCO_DICTS.items(), 1):
-    print(f"  {i}. {name}")
-
-print("Select ArUco Dictionary (1-3, default: 3): ", end="")
-dict_input = input().strip()
-dict_choice = int(dict_input) if dict_input.isdigit() and 1 <= int(dict_input) <= 3 else 3
-dict_name = list(ARUCO_DICTS.keys())[dict_choice - 1]
+# --------------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------------
+# Defaults, so that importing this module needs no stdin and opens no camera.
+# configure() overwrites them from the interactive prompts when run as a script.
+KNOWN_MARKER_SIZE_MM = MARKER_SIZES[0]
+dict_name = list(ARUCO_DICTS.keys())[2]
 aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICTS[dict_name])
+
+# Smoothing state. These live at module scope because apply_advanced_smoothing()
+# reads them as globals; making them locals of main() would break it.
+measurement_history = {}
+smoothing_window = 20          # frames averaged for stability
+min_stable_frames = 8          # frames before a measurement counts as stable
+stability_threshold = 0.010    # 1% relative threshold
+stability_std_threshold = 0.5  # standard-deviation threshold
+
+
+def configure():
+    """Ask for marker size and ArUco dictionary, and rebuild the detector.
+
+    Called only from main(). Sets the module-level configuration so the
+    functions below, which read these as globals, see the chosen values.
+    """
+    global KNOWN_MARKER_SIZE_MM, dict_name, aruco_dict, detector, marker_length
+
+    print("Available ArUco marker sizes:")
+    for i, size in enumerate(MARKER_SIZES, 1):
+        print(f"  {i}. {size}x{size}mm")
+
+    print("\nEnter marker size (1-4, default: 1 for 47x47mm): ", end="")
+    size_input = input().strip()
+    size_choice = (int(size_input)
+                   if size_input.isdigit() and 1 <= int(size_input) <= len(MARKER_SIZES)
+                   else 1)
+    KNOWN_MARKER_SIZE_MM = MARKER_SIZES[size_choice - 1]
+
+    print("\nAvailable ArUco dictionaries:")
+    for i, (name, _) in enumerate(ARUCO_DICTS.items(), 1):
+        print(f"  {i}. {name}")
+
+    print("Select ArUco Dictionary (1-3, default: 3): ", end="")
+    dict_input = input().strip()
+    dict_choice = (int(dict_input)
+                   if dict_input.isdigit() and 1 <= int(dict_input) <= 3
+                   else 3)
+    dict_name = list(ARUCO_DICTS.keys())[dict_choice - 1]
+    aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICTS[dict_name])
+
+    # Rebuild the two objects derived from the choices above.
+    detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params)
+    marker_length = KNOWN_MARKER_SIZE_MM / 1000.0
+
 
 # Initialize detector
 aruco_params = cv2.aruco.DetectorParameters()
@@ -959,592 +991,609 @@ def apply_advanced_smoothing(object_id, current_measurements):
     
     return smoothed
 
-# Initialize webcam
-print(f"Selected marker size: {KNOWN_MARKER_SIZE_MM}x{KNOWN_MARKER_SIZE_MM}mm")
-print(f"Selected dictionary: {dict_name}")
-calibrate_camera_intrinsics()  # Show calibration guide
-print("Initializing webcam with pose estimation enabled...")
-cap = cv2.VideoCapture(0)
 
-if not cap.isOpened():
-    print("Error: Could not open webcam")
-    exit(1)
 
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+def main():
+    """Run the interactive measurement application."""
+    # Rebound here because the render loop assigns to them; without
+    # `global` they would shadow the module-level copies that
+    # apply_advanced_smoothing() reads.
+    global measurement_history, smoothing_window, min_stable_frames
+    global stability_threshold, stability_std_threshold
 
-print("INSPECT-AR - FROM MANUAL INSPECTIONS TO AI INSPECTOR")
-print("Controls: 'q' - Quit, 's' - Save screenshot, 'c' - Contrast, 'r' - Reset, 'u' - Unlock, 'f' - Freeze")
+    configure()
 
-# State variables
-pixel_to_mm_ratio = None
-calibrated = False
-use_contrast = True
-frame_count = 0
-detection_count = 0
+    # Initialize webcam
+    print(f"Selected marker size: {KNOWN_MARKER_SIZE_MM}x{KNOWN_MARKER_SIZE_MM}mm")
+    print(f"Selected dictionary: {dict_name}")
+    calibrate_camera_intrinsics()  # Show calibration guide
+    print("Initializing webcam with pose estimation enabled...")
+    cap = cv2.VideoCapture(0)
 
-# Multi-object mode
-single_object_mode = False  # Set to False to enable multiple object detection, True for single object mode
+    if not cap.isOpened():
+        print("Error: Could not open webcam")
+        exit(1)
 
-# Enhanced measurement history for advanced smoothing
-measurement_history = {}
-smoothing_window = 20  # Number of frames to average for stability (increased for better smoothing)
-min_stable_frames = 8  # Minimum frames to consider measurement stable
-stability_threshold = 0.010  # 1% threshold for stability (reduced for more sensitivity)
-stability_std_threshold = 0.5  # Standard deviation threshold for stability
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-# YOLO detector initialization
-yolo_detector = YOLODetector()
+    print("INSPECT-AR - FROM MANUAL INSPECTIONS TO AI INSPECTOR")
+    print("Controls: 'q' - Quit, 's' - Save screenshot, 'c' - Contrast, 'r' - Reset, 'u' - Unlock, 'f' - Freeze")
 
-# Lock-on mechanism variables
-# Locking mechanism variables
-LOCK_THRESHOLD_SECONDS = 5.0  # Lock after 5 seconds of consistent detection
-is_locked = False  # Global lock state
-locked_objects = {}  # Dictionary to store locked objects by ID
-first_detection_times = {}  # Track detection start time for each object
-consistent_detection_timers = {}  # Track consistent detection time for each object
-lock_activation_time = None  # Time when the lock was activated
+    # State variables
+    pixel_to_mm_ratio = None
+    calibrated = False
+    use_contrast = True
+    frame_count = 0
+    detection_count = 0
 
-# Locked pixel dimensions for display (both lock together when object locks)
-locked_marker_size_px = None
-locked_object_size_px = None
+    # Multi-object mode
+    single_object_mode = False  # Set to False to enable multiple object detection, True for single object mode
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        print("Failed to grab frame")
-        break
-    
-    frame_count += 1
-    display_frame = frame.copy()
-    
-    # Preprocessing
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    if use_contrast:
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        gray = clahe.apply(gray)
-    
-    # Detect ArUco markers
-    corners, ids, _ = detector.detectMarkers(gray)
-    
-    # Draw header bar
-    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 90),
-                  (15, 15, 25), -1)
-    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 90),
-                  (14, 165, 233), 2)
-    cv2.putText(display_frame, "INSPECT-AR", 
-                (20, 40), cv2.FONT_HERSHEY_DUPLEX, 1.2, (14, 165, 233), 2)
-    cv2.putText(display_frame, "FROM MANUAL INSPECTIONS TO AI INSPECTOR", 
-                (20, 70), cv2.FONT_HERSHEY_DUPLEX, 0.6, (14, 165, 233), 1)
-    
-    # Estimate pose of markers for 3D information
-    rvecs, tvecs, marker_distances, marker_tilt_angles = estimate_marker_pose(corners, ids, marker_length) if ids is not None else (None, None, None, None)
-    
-    if ids is not None and len(ids) > 0:
-        # Calibrate using first marker
-        if not calibrated:
-            pixel_to_mm_ratio, avg_size = compute_pixel_to_mm_ratio(
-                corners[0], KNOWN_MARKER_SIZE_MM
-            )
-            calibrated = True
-        
-        # Apply perspective correction based on marker tilt angles
-        if calibrated and marker_tilt_angles is not None and len(marker_tilt_angles) > 0:
-            # Get tilt angles for the first marker
-            tilt = marker_tilt_angles[0]
-            pitch = abs(tilt['pitch'])
-            yaw = abs(tilt['yaw'])
-            
-            # Calculate the effective tilt angle for perspective correction
-            # Use the maximum of pitch and yaw as the primary tilt factor
-            tilt_angle = max(pitch, yaw)
-            
-            # Calculate correction factor based on tilt
-            # The cosine of the tilt angle is used to correct for perspective distortion
-            cos_tilt = np.abs(np.cos(tilt_angle))  # Use absolute value to handle negative angles
-            # Limit the correction factor to prevent extreme values when marker is nearly perpendicular
-            cos_tilt = max(0.3, cos_tilt)  # Don't let it go below 0.3 to prevent extreme corrections
-            perspective_correction_factor = 1.0 / cos_tilt
-            
-            # Only apply correction if tilt is significant (> 10 degrees)
-            if tilt_angle > 0.175:  # About 10 degrees
-                # Also apply distance-based correction
-                distance_correction_factor = 1.0
-                if marker_distances is not None and len(marker_distances) > 0:
-                    current_distance = marker_distances[0]  # Distance to first marker in mm
-                    # Reference distance (when marker is at ideal position)
-                    reference_distance = KNOWN_MARKER_SIZE_MM * 10  # Adjust as needed
-                    distance_correction_factor = current_distance / reference_distance
-                
-                # Combine both corrections
-                corrected_pixel_to_mm_ratio = pixel_to_mm_ratio * perspective_correction_factor * distance_correction_factor
-            else:
-                corrected_pixel_to_mm_ratio = pixel_to_mm_ratio  # No significant tilt, use base ratio
-        else:
-            corrected_pixel_to_mm_ratio = pixel_to_mm_ratio
-        
-        # Calculate marker pixel size (continuously updates, not locked yet)
-        corner_points = corners[0][0]
-        marker_width_px = np.linalg.norm(corner_points[0] - corner_points[1])
-        marker_height_px = np.linalg.norm(corner_points[1] - corner_points[2])
-        current_marker_size_px = (marker_width_px, marker_height_px)
-        
-        # Draw detected markers
-        cv2.aruco.drawDetectedMarkers(display_frame, corners, ids)
-        
-        # Draw coordinate axes on markers to visualize orientation
-        # Note: Axis drawing temporarily disabled due to OpenCV version compatibility
-        # if rvecs is not None and tvecs is not None:
-        #    draw_axis_on_marker(display_frame, rvecs, tvecs, CAMERA_MATRIX, DIST_COEFFS, marker_length)
-        
-        # Define ROI near marker
-        roi_rect, roi_center = define_roi_near_marker(corners[0], frame.shape)
-        x, y, w, h = roi_rect
-        
-        # Draw ROI boundary
-        cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 200, 0), 2)
-        cv2.putText(display_frame, "ROI", (x + 5, y + 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
-        
-        # Detection locking logic
-        if single_object_mode:
-            # Single object detection mode - use global lock
-            if not is_locked:
-                # Single object detection mode - use YOLO to detect best object in ROI
-                detections, roi_frame = detect_objects_with_yolo_in_roi(
-                    frame, roi_rect, yolo_detector, marker_corners=corners[0]
+    # Enhanced measurement history for advanced smoothing
+    measurement_history = {}
+    smoothing_window = 20  # Number of frames to average for stability (increased for better smoothing)
+    min_stable_frames = 8  # Minimum frames to consider measurement stable
+    stability_threshold = 0.010  # 1% threshold for stability (reduced for more sensitivity)
+    stability_std_threshold = 0.5  # Standard deviation threshold for stability
+
+    # YOLO detector initialization
+    yolo_detector = YOLODetector()
+
+    # Lock-on mechanism variables
+    # Locking mechanism variables
+    LOCK_THRESHOLD_SECONDS = 5.0  # Lock after 5 seconds of consistent detection
+    is_locked = False  # Global lock state
+    locked_objects = {}  # Dictionary to store locked objects by ID
+    first_detection_times = {}  # Track detection start time for each object
+    consistent_detection_timers = {}  # Track consistent detection time for each object
+    lock_activation_time = None  # Time when the lock was activated
+
+    # Locked pixel dimensions for display (both lock together when object locks)
+    locked_marker_size_px = None
+    locked_object_size_px = None
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame")
+            break
+
+        frame_count += 1
+        display_frame = frame.copy()
+
+        # Preprocessing
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if use_contrast:
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+
+        # Detect ArUco markers
+        corners, ids, _ = detector.detectMarkers(gray)
+
+        # Draw header bar
+        cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 90),
+                      (15, 15, 25), -1)
+        cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 90),
+                      (14, 165, 233), 2)
+        cv2.putText(display_frame, "INSPECT-AR", 
+                    (20, 40), cv2.FONT_HERSHEY_DUPLEX, 1.2, (14, 165, 233), 2)
+        cv2.putText(display_frame, "FROM MANUAL INSPECTIONS TO AI INSPECTOR", 
+                    (20, 70), cv2.FONT_HERSHEY_DUPLEX, 0.6, (14, 165, 233), 1)
+
+        # Estimate pose of markers for 3D information
+        rvecs, tvecs, marker_distances, marker_tilt_angles = estimate_marker_pose(corners, ids, marker_length) if ids is not None else (None, None, None, None)
+
+        if ids is not None and len(ids) > 0:
+            # Calibrate using first marker
+            if not calibrated:
+                pixel_to_mm_ratio, avg_size = compute_pixel_to_mm_ratio(
+                    corners[0], KNOWN_MARKER_SIZE_MM
                 )
-                        
-                # Get the best detection (highest confidence) for single object mode
-                detection = None
-                best_contour = None
-                if detections:
-                    # Sort by confidence to get the best detection
-                    detections_sorted = sorted(detections, key=lambda x: x['confidence'], reverse=True)
-                    detection = detections_sorted[0]
-                    best_contour = detection.get('contour')
-                        
-                if detection is not None and best_contour is not None:
-                    detection_count += 1
-                            
-                    # Start or continue timer for consistent detection
-                    current_time = time.time()
-                    detection_id = detection['id']
-                    if detection_id not in first_detection_times:
-                        first_detection_times[detection_id] = current_time
-                        consistent_detection_timers[detection_id] = 0.0
-                    else:
-                        consistent_detection_timers[detection_id] = current_time - first_detection_times[detection_id]
-                            
-                    # Use corrected pixel-to-mm ratio if available, otherwise use base ratio
-                    current_pixel_to_mm_ratio = corrected_pixel_to_mm_ratio if 'corrected_pixel_to_mm_ratio' in locals() else pixel_to_mm_ratio
-                            
-                    # Measure object with rotation and tilt correction
-                    measurements, rect = measure_object_with_tilt_correction(best_contour, current_pixel_to_mm_ratio, marker_tilt_angles)
-                            
-                    if measurements is not None:
-                        # Apply advanced smoothing to reduce fluctuation
-                        smoothed_measurements = apply_advanced_smoothing(detection['id'], measurements)
-                                
-                        # Get object actual pixel size from rotated rect (not YOLO bbox)
-                        # This is the actual measured dimension used in calculations
-                        obj_width_px = smoothed_measurements['width_mm'] / current_pixel_to_mm_ratio
-                        obj_height_px = smoothed_measurements['height_mm'] / current_pixel_to_mm_ratio
-                        current_object_size_px = (obj_width_px, obj_height_px)
-                                
-                        # Check if we should lock onto this object (5 seconds)
-                        if consistent_detection_timers[detection_id] >= LOCK_THRESHOLD_SECONDS and not is_locked:
-                            is_locked = True
-                            lock_activation_time = time.time()  # Record when the lock was activated
-                            locked_objects[detection_id] = {
-                                'measurements': smoothed_measurements.copy(),
-                                'rect': rect,
-                                'box': cv2.boxPoints(rect),
-                                'confidence': detection['confidence']
-                            }
-                            locked_objects[detection_id]['box'] = np.intp(locked_objects[detection_id]['box'])
-                            locked_objects[detection_id]['box'][:, 0] += x
-                            locked_objects[detection_id]['box'][:, 1] += y
-                            # Lock BOTH marker and object pixel dimensions together
-                            locked_marker_size_px = current_marker_size_px
-                            locked_object_size_px = current_object_size_px
-                            print(f"🔒 LOCKED onto object (ID: {detection['id']}, Confidence: {detection['confidence']:.2f}) after {consistent_detection_timers[detection_id]:.1f}s")
-                            print(f"📏 Locked dimensions - Marker: {locked_marker_size_px[0]:.0f}x{locked_marker_size_px[1]:.0f}px, Object: {locked_object_size_px[0]:.0f}x{locked_object_size_px[1]:.0f}px")
-                                
-                        # Draw rotated rectangle
-                        box = draw_rotated_rectangle(display_frame, rect, (x, y), 
-                                                    color=(0, 255, 0), thickness=3)
-                                
-                        # Draw dimension lines with smoothed values
-                        draw_dimension_lines(display_frame, box, smoothed_measurements)
-                                
-                        # Draw measurement overlay - moved to left side to avoid ROI
-                        distance_info = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                        draw_measurement_overlay(display_frame, smoothed_measurements, (20, 100), distance_mm=distance_info, is_multiple_objects=False, roi_rect=roi_rect)
-                                
-                        # Draw center point
-                        center_abs = (int(smoothed_measurements['center'][0]) + x, 
-                                     int(smoothed_measurements['center'][1]) + y)
-                        cv2.circle(display_frame, center_abs, 6, (0, 255, 0), -1)
-                        cv2.circle(display_frame, center_abs, 10, (0, 255, 0), 2)
-                                
-                        # Draw compact info panel in bottom right (away from ROI)
-                        # If locked: show locked values, otherwise show current marker + no object yet
-                        display_marker_size = locked_marker_size_px if is_locked else current_marker_size_px
-                        display_object_size = locked_object_size_px if is_locked else None
-                        display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                        draw_compact_info_panel(display_frame, display_marker_size, display_object_size, marker_distance=display_distance)
-                                
-                        # Draw detection bbox from YOLO
-                        bbox = detection['bbox']
-                        bbox_x1, bbox_y1, bbox_x2, bbox_y2 = [int(coord) for coord in bbox]
-                        cv2.rectangle(roi_frame, (bbox_x1, bbox_y1), (bbox_x2, bbox_y2), (0, 255, 255), 2)
-                                
-                        # Draw confidence and detection info
-                        conf_text = f"Conf: {detection['confidence']:.2f}"
-                        cv2.putText(roi_frame, conf_text, (bbox_x1, bbox_y1 - 5),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-                                
-                        # Draw depth indicator (size relative to marker)
-                        if 'area' in detection:
-                            area_text = f"Area: {detection['area']:.0f}px"
-                            cv2.putText(roi_frame, area_text, (bbox_x1, bbox_y2 + 15),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
-                                
-                        # Status with timer
-                        if consistent_detection_timers[detection_id] < LOCK_THRESHOLD_SECONDS:
-                            status_text = f"✅ DETECTING... Lock in {LOCK_THRESHOLD_SECONDS - consistent_detection_timers[detection_id]:.1f}s"
-                            status_color = (0, 255, 255)
-                        else:
-                            status_text = "🔒 LOCKED ON TARGET - Press 'u' to unlock"
-                            status_color = (0, 255, 0)
-                    else:
-                        status_text = "⚠️ CONTOUR TOO SMALL"
-                        status_color = (0, 165, 255)
-                        if detection_id in first_detection_times:
-                            del first_detection_times[detection_id]
-                            del consistent_detection_timers[detection_id]
+                calibrated = True
+
+            # Apply perspective correction based on marker tilt angles
+            if calibrated and marker_tilt_angles is not None and len(marker_tilt_angles) > 0:
+                # Get tilt angles for the first marker
+                tilt = marker_tilt_angles[0]
+                pitch = abs(tilt['pitch'])
+                yaw = abs(tilt['yaw'])
+
+                # Calculate the effective tilt angle for perspective correction
+                # Use the maximum of pitch and yaw as the primary tilt factor
+                tilt_angle = max(pitch, yaw)
+
+                # Calculate correction factor based on tilt
+                # The cosine of the tilt angle is used to correct for perspective distortion
+                cos_tilt = np.abs(np.cos(tilt_angle))  # Use absolute value to handle negative angles
+                # Limit the correction factor to prevent extreme values when marker is nearly perpendicular
+                cos_tilt = max(0.3, cos_tilt)  # Don't let it go below 0.3 to prevent extreme corrections
+                perspective_correction_factor = 1.0 / cos_tilt
+
+                # Only apply correction if tilt is significant (> 10 degrees)
+                if tilt_angle > 0.175:  # About 10 degrees
+                    # Also apply distance-based correction
+                    distance_correction_factor = 1.0
+                    if marker_distances is not None and len(marker_distances) > 0:
+                        current_distance = marker_distances[0]  # Distance to first marker in mm
+                        # Reference distance (when marker is at ideal position)
+                        reference_distance = KNOWN_MARKER_SIZE_MM * 10  # Adjust as needed
+                        distance_correction_factor = current_distance / reference_distance
+
+                    # Combine both corrections
+                    corrected_pixel_to_mm_ratio = pixel_to_mm_ratio * perspective_correction_factor * distance_correction_factor
                 else:
-                    status_text = "🔍 SEARCHING FOR OBJECT IN ROI (YOLO)..."
-                    status_color = (255, 200, 0)
-                    # Clear any tracking for this detection ID if no detection
-                    detection_id = None
-                            
-                    # Still show ROI for context
-                    roi_frame = frame[y:y+h, x:x+w].copy()
-                            
-                    # Draw info panel in bottom right: show current marker size (updating) + no object
-                    display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                    draw_compact_info_panel(display_frame, current_marker_size_px, None, marker_distance=display_distance)
+                    corrected_pixel_to_mm_ratio = pixel_to_mm_ratio  # No significant tilt, use base ratio
             else:
-                # Locked mode for single object - display frozen measurements
-                # Draw all locked objects
-                for idx, (obj_id, locked_obj) in enumerate(locked_objects.items()):
-                    # Draw locked rotated rectangle
-                    cv2.drawContours(display_frame, [locked_obj['box']], 0, (255, 0, 255), 3)
-                            
-                    # Draw dimension lines with locked values
-                    draw_dimension_lines(display_frame, locked_obj['box'], locked_obj['measurements'])
-                            
-                    # Draw center point with locked measurements
-                    center_abs = (int(locked_obj['measurements']['center'][0]) + x, 
-                                 int(locked_obj['measurements']['center'][1]) + y)
-                    cv2.circle(display_frame, center_abs, 6, (255, 0, 255), -1)
-                    cv2.circle(display_frame, center_abs, 10, (255, 0, 255), 2)
-                            
-                    # Draw measurement overlay for each locked object
-                    distance_info = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                    # Use smaller table if in multiple object mode
-                    # Position each overlay differently to avoid overlap
-                    overlay_x = 20 + (idx % 3) * 400  # Position horizontally in 3 columns
-                    overlay_y = 100 + (idx // 3) * 500  # Position vertically in rows
-                    draw_measurement_overlay(display_frame, locked_obj['measurements'], (overlay_x, overlay_y), 
-                                            object_label=f"OBJ {idx+1} LOCKED", distance_mm=distance_info, 
-                                            is_multiple_objects=(not single_object_mode), roi_rect=roi_rect)
-                            
-                # Draw compact info panel in bottom right with permanently locked values
-                display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                draw_compact_info_panel(display_frame, locked_marker_size_px, locked_object_size_px, marker_distance=display_distance)
-                                
-                # Status
-                status_text = f"🔒 {len(locked_objects)} OBJECTS LOCKED - Will remain locked until 'u' is pressed"
-                status_color = (255, 0, 255)
-                                
-                # Still show ROI for context (but no detection)
-                roi_frame = frame[y:y+h, x:x+w].copy()
-        else:
-            # Multiple object detection mode - detect and measure all objects in ROI
-            # NOTE: In multiple object mode, we allow continuous detection even when some objects are locked
-            detections, roi_frame = detect_objects_with_yolo_in_roi(
-                frame, roi_rect, yolo_detector, marker_corners=corners[0]
-            )
-                                 
-            # Process all detected objects
-            if detections:
-                detection_count += len(detections)
-                                    
-                # Use corrected pixel-to-mm ratio if available, otherwise use base ratio
-                current_pixel_to_mm_ratio = corrected_pixel_to_mm_ratio if 'corrected_pixel_to_mm_ratio' in locals() else pixel_to_mm_ratio
-                                    
-                # Process each detected object
-                for i, detection in enumerate(detections):
-                    contour = detection.get('contour')
-                    if contour is not None:
-                        # Create a unique ID for this detection in multiple object mode
-                        bbox = detection['bbox']
-                        x1, y1, x2, y2 = [int(coord) for coord in bbox]
-                        
-                        # Check if this detection is close to any locked object
-                        detection_id = None
-                        for locked_id, locked_obj in locked_objects.items():
-                            # Calculate distance between centers
-                            if 'center' in locked_obj['measurements']:
-                                locked_center_x = int(locked_obj['measurements']['center'][0]) + x
-                                locked_center_y = int(locked_obj['measurements']['center'][1]) + y
-                                detection_center_x = x1 + (x2 - x1) // 2
-                                detection_center_y = y1 + (y2 - y1) // 2
-                                
-                                distance = np.sqrt((locked_center_x - detection_center_x)**2 + (locked_center_y - detection_center_y)**2)
-                                
-                                # If the detection is close to a locked object, use the same ID
-                                if distance < 100:  # Threshold in pixels
-                                    detection_id = locked_id
-                                    break
-                        
-                        # If no close locked object found, create a new ID
-                        if detection_id is None:
-                            bbox_str = f"{x1}_{y1}_{x2-x1}_{y2-y1}_{int(time.time())}"
-                            detection_id = f"obj_{bbox_str}"
-                            
+                corrected_pixel_to_mm_ratio = pixel_to_mm_ratio
+
+            # Calculate marker pixel size (continuously updates, not locked yet)
+            corner_points = corners[0][0]
+            marker_width_px = np.linalg.norm(corner_points[0] - corner_points[1])
+            marker_height_px = np.linalg.norm(corner_points[1] - corner_points[2])
+            current_marker_size_px = (marker_width_px, marker_height_px)
+
+            # Draw detected markers
+            cv2.aruco.drawDetectedMarkers(display_frame, corners, ids)
+
+            # Draw coordinate axes on markers to visualize orientation
+            # Note: Axis drawing temporarily disabled due to OpenCV version compatibility
+            # if rvecs is not None and tvecs is not None:
+            #    draw_axis_on_marker(display_frame, rvecs, tvecs, CAMERA_MATRIX, DIST_COEFFS, marker_length)
+
+            # Define ROI near marker
+            roi_rect, roi_center = define_roi_near_marker(corners[0], frame.shape)
+            x, y, w, h = roi_rect
+
+            # Draw ROI boundary
+            cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 200, 0), 2)
+            cv2.putText(display_frame, "ROI", (x + 5, y + 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+
+            # Detection locking logic
+            if single_object_mode:
+                # Single object detection mode - use global lock
+                if not is_locked:
+                    # Single object detection mode - use YOLO to detect best object in ROI
+                    detections, roi_frame = detect_objects_with_yolo_in_roi(
+                        frame, roi_rect, yolo_detector, marker_corners=corners[0]
+                    )
+
+                    # Get the best detection (highest confidence) for single object mode
+                    detection = None
+                    best_contour = None
+                    if detections:
+                        # Sort by confidence to get the best detection
+                        detections_sorted = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+                        detection = detections_sorted[0]
+                        best_contour = detection.get('contour')
+
+                    if detection is not None and best_contour is not None:
+                        detection_count += 1
+
+                        # Start or continue timer for consistent detection
+                        current_time = time.time()
+                        detection_id = detection['id']
+                        if detection_id not in first_detection_times:
+                            first_detection_times[detection_id] = current_time
+                            consistent_detection_timers[detection_id] = 0.0
+                        else:
+                            consistent_detection_timers[detection_id] = current_time - first_detection_times[detection_id]
+
+                        # Use corrected pixel-to-mm ratio if available, otherwise use base ratio
+                        current_pixel_to_mm_ratio = corrected_pixel_to_mm_ratio if 'corrected_pixel_to_mm_ratio' in locals() else pixel_to_mm_ratio
+
                         # Measure object with rotation and tilt correction
-                        measurements, rect = measure_object_with_tilt_correction(contour, current_pixel_to_mm_ratio, marker_tilt_angles)
-                                            
+                        measurements, rect = measure_object_with_tilt_correction(best_contour, current_pixel_to_mm_ratio, marker_tilt_angles)
+
                         if measurements is not None:
-                            # If this detection corresponds to a locked object, skip processing and just draw the locked version
-                            if detection_id in locked_objects:
-                                # Draw the locked object (this will be done later in the display section)
-                                continue
-                            
-                            # Start or continue timer for consistent detection for this object
-                            current_time = time.time()
-                            if detection_id not in first_detection_times:
-                                first_detection_times[detection_id] = current_time
-                                consistent_detection_timers[detection_id] = 0.0
-                            else:
-                                consistent_detection_timers[detection_id] = current_time - first_detection_times[detection_id]
-                                                
                             # Apply advanced smoothing to reduce fluctuation
-                            smoothed_measurements = apply_advanced_smoothing(detection_id, measurements)
-                                                
+                            smoothed_measurements = apply_advanced_smoothing(detection['id'], measurements)
+
+                            # Get object actual pixel size from rotated rect (not YOLO bbox)
+                            # This is the actual measured dimension used in calculations
+                            obj_width_px = smoothed_measurements['width_mm'] / current_pixel_to_mm_ratio
+                            obj_height_px = smoothed_measurements['height_mm'] / current_pixel_to_mm_ratio
+                            current_object_size_px = (obj_width_px, obj_height_px)
+
                             # Check if we should lock onto this object (5 seconds)
-                            # In multiple object mode, we can lock individual objects independently
-                            if consistent_detection_timers[detection_id] >= LOCK_THRESHOLD_SECONDS:
-                                # Only lock if not already locked
-                                if detection_id not in locked_objects:
-                                    locked_objects[detection_id] = {
-                                        'measurements': smoothed_measurements.copy(),
-                                        'rect': rect,
-                                        'box': cv2.boxPoints(rect),
-                                        'confidence': detection['confidence']
-                                    }
-                                    locked_objects[detection_id]['box'] = np.intp(locked_objects[detection_id]['box'])
-                                    locked_objects[detection_id]['box'][:, 0] += x
-                                    locked_objects[detection_id]['box'][:, 1] += y
-                                    print(f"🔒 LOCKED onto object {i+1} (ID: {detection_id}, Conf: {detection['confidence']:.2f}) after {consistent_detection_timers[detection_id]:.1f}s")
-                                                
-                            # Draw rotated rectangle for this object
-                            # If object is locked, use locked rectangle, otherwise use current detection
-                            if detection_id in locked_objects:
-                                # Use the locked box which is already offset
-                                cv2.drawContours(display_frame, [locked_objects[detection_id]['box']], 0, (255, 0, 255), 3)
-                                # Draw dimension lines with locked values
-                                draw_dimension_lines(display_frame, locked_objects[detection_id]['box'], locked_objects[detection_id]['measurements'])
-                                # Draw center point with locked measurements
-                                # The center in measurements is relative to ROI, so add ROI offset
-                                locked_center_abs = (int(locked_objects[detection_id]['measurements']['center'][0]) + x, 
-                                             int(locked_objects[detection_id]['measurements']['center'][1]) + y)
-                                cv2.circle(display_frame, locked_center_abs, 6, (255, 0, 255), -1)
-                                cv2.circle(display_frame, locked_center_abs, 10, (255, 0, 255), 2)
-                            else:
-                                # Use current detection
-                                box = draw_rotated_rectangle(display_frame, rect, (x, y), 
-                                                            color=(0, 255, 0), thickness=2)
-                                # Draw dimension lines with smoothed values
-                                draw_dimension_lines(display_frame, box, smoothed_measurements)
-                                # Draw center point
-                                center_abs = (int(smoothed_measurements['center'][0]) + x, 
-                                             int(smoothed_measurements['center'][1]) + y)
-                                cv2.circle(display_frame, center_abs, 4, (0, 255, 0), -1)
-                                cv2.circle(display_frame, center_abs, 7, (0, 255, 0), 1)
-                            
-                            # Draw detection bbox from YOLO
-                            bbox = detection['bbox']
-                            bbox_x1, bbox_y1, bbox_x2, bbox_y2 = [int(coord) for coord in bbox]
-                            cv2.rectangle(roi_frame, (bbox_x1, bbox_y1), (bbox_x2, bbox_y2), (0, 255, 255), 1)
-                            
-                            # Draw confidence and detection info
-                            conf_text = f"Conf: {detection['confidence']:.2f}"
-                            cv2.putText(roi_frame, conf_text, (bbox_x1, bbox_y1 - 5),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                                                
-                            # Draw measurement overlay with unique label for each object
+                            if consistent_detection_timers[detection_id] >= LOCK_THRESHOLD_SECONDS and not is_locked:
+                                is_locked = True
+                                lock_activation_time = time.time()  # Record when the lock was activated
+                                locked_objects[detection_id] = {
+                                    'measurements': smoothed_measurements.copy(),
+                                    'rect': rect,
+                                    'box': cv2.boxPoints(rect),
+                                    'confidence': detection['confidence']
+                                }
+                                locked_objects[detection_id]['box'] = np.intp(locked_objects[detection_id]['box'])
+                                locked_objects[detection_id]['box'][:, 0] += x
+                                locked_objects[detection_id]['box'][:, 1] += y
+                                # Lock BOTH marker and object pixel dimensions together
+                                locked_marker_size_px = current_marker_size_px
+                                locked_object_size_px = current_object_size_px
+                                print(f"🔒 LOCKED onto object (ID: {detection['id']}, Confidence: {detection['confidence']:.2f}) after {consistent_detection_timers[detection_id]:.1f}s")
+                                print(f"📏 Locked dimensions - Marker: {locked_marker_size_px[0]:.0f}x{locked_marker_size_px[1]:.0f}px, Object: {locked_object_size_px[0]:.0f}x{locked_object_size_px[1]:.0f}px")
+
+                            # Draw rotated rectangle
+                            box = draw_rotated_rectangle(display_frame, rect, (x, y), 
+                                                        color=(0, 255, 0), thickness=3)
+
+                            # Draw dimension lines with smoothed values
+                            draw_dimension_lines(display_frame, box, smoothed_measurements)
+
+                            # Draw measurement overlay - moved to left side to avoid ROI
                             distance_info = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                            # Position each overlay differently to avoid overlap
-                            overlay_x = 20 + (i % 3) * 400  # Position horizontally in 3 columns
-                            overlay_y = 100 + (i // 3) * 500  # Position vertically in rows
-                                                
-                            # If object is locked, use locked measurements
-                            if detection_id in locked_objects:
-                                draw_measurement_overlay(display_frame, locked_objects[detection_id]['measurements'], (overlay_x, overlay_y), 
-                                                        object_label=f"OBJ {i+1} LOCKED", distance_mm=distance_info, is_multiple_objects=True, roi_rect=roi_rect)
-                            else:
-                                draw_measurement_overlay(display_frame, smoothed_measurements, (overlay_x, overlay_y), 
-                                                        object_label=f"OBJ {i+1}", distance_mm=distance_info, is_multiple_objects=True, roi_rect=roi_rect)
-                                                
+                            draw_measurement_overlay(display_frame, smoothed_measurements, (20, 100), distance_mm=distance_info, is_multiple_objects=False, roi_rect=roi_rect)
+
+                            # Draw center point
+                            center_abs = (int(smoothed_measurements['center'][0]) + x, 
+                                         int(smoothed_measurements['center'][1]) + y)
+                            cv2.circle(display_frame, center_abs, 6, (0, 255, 0), -1)
+                            cv2.circle(display_frame, center_abs, 10, (0, 255, 0), 2)
+
+                            # Draw compact info panel in bottom right (away from ROI)
+                            # If locked: show locked values, otherwise show current marker + no object yet
+                            display_marker_size = locked_marker_size_px if is_locked else current_marker_size_px
+                            display_object_size = locked_object_size_px if is_locked else None
+                            display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                            draw_compact_info_panel(display_frame, display_marker_size, display_object_size, marker_distance=display_distance)
+
                             # Draw detection bbox from YOLO
                             bbox = detection['bbox']
                             bbox_x1, bbox_y1, bbox_x2, bbox_y2 = [int(coord) for coord in bbox]
-                            cv2.rectangle(roi_frame, (bbox_x1, bbox_y1), (bbox_x2, bbox_y2), (0, 255, 255), 1)
-                                                
+                            cv2.rectangle(roi_frame, (bbox_x1, bbox_y1), (bbox_x2, bbox_y2), (0, 255, 255), 2)
+
                             # Draw confidence and detection info
                             conf_text = f"Conf: {detection['confidence']:.2f}"
                             cv2.putText(roi_frame, conf_text, (bbox_x1, bbox_y1 - 5),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                                    
-                # Draw all locked objects that weren't detected in this frame
-                for locked_id, locked_obj in locked_objects.items():
-                    # Check if this locked object was not just processed
-                    was_detected_this_frame = False
-                    for detection in detections:
-                        contour = detection.get('contour')
-                        if contour is not None:
-                            bbox = detection['bbox']
-                            x1, y1, x2, y2 = [int(coord) for coord in bbox]
-                            # Calculate distance between centers
-                            if 'center' in locked_obj['measurements']:
-                                locked_center_x = int(locked_obj['measurements']['center'][0]) + x
-                                locked_center_y = int(locked_obj['measurements']['center'][1]) + y
-                                detection_center_x = x1 + (x2 - x1) // 2
-                                detection_center_y = y1 + (y2 - y1) // 2
-                                                
-                                distance = np.sqrt((locked_center_x - detection_center_x)**2 + (locked_center_y - detection_center_y)**2)
-                                                
-                                if distance < 100:  # Same threshold as used for ID assignment
-                                    was_detected_this_frame = True
-                                    break
-                                    
-                    # If this locked object wasn't detected this frame, draw it separately
-                    if not was_detected_this_frame:
-                        # Use the locked box which is already offset
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+                            # Draw depth indicator (size relative to marker)
+                            if 'area' in detection:
+                                area_text = f"Area: {detection['area']:.0f}px"
+                                cv2.putText(roi_frame, area_text, (bbox_x1, bbox_y2 + 15),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
+                            # Status with timer
+                            if consistent_detection_timers[detection_id] < LOCK_THRESHOLD_SECONDS:
+                                status_text = f"✅ DETECTING... Lock in {LOCK_THRESHOLD_SECONDS - consistent_detection_timers[detection_id]:.1f}s"
+                                status_color = (0, 255, 255)
+                            else:
+                                status_text = "🔒 LOCKED ON TARGET - Press 'u' to unlock"
+                                status_color = (0, 255, 0)
+                        else:
+                            status_text = "⚠️ CONTOUR TOO SMALL"
+                            status_color = (0, 165, 255)
+                            if detection_id in first_detection_times:
+                                del first_detection_times[detection_id]
+                                del consistent_detection_timers[detection_id]
+                    else:
+                        status_text = "🔍 SEARCHING FOR OBJECT IN ROI (YOLO)..."
+                        status_color = (255, 200, 0)
+                        # Clear any tracking for this detection ID if no detection
+                        detection_id = None
+
+                        # Still show ROI for context
+                        roi_frame = frame[y:y+h, x:x+w].copy()
+
+                        # Draw info panel in bottom right: show current marker size (updating) + no object
+                        display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                        draw_compact_info_panel(display_frame, current_marker_size_px, None, marker_distance=display_distance)
+                else:
+                    # Locked mode for single object - display frozen measurements
+                    # Draw all locked objects
+                    for idx, (obj_id, locked_obj) in enumerate(locked_objects.items()):
+                        # Draw locked rotated rectangle
                         cv2.drawContours(display_frame, [locked_obj['box']], 0, (255, 0, 255), 3)
+
                         # Draw dimension lines with locked values
                         draw_dimension_lines(display_frame, locked_obj['box'], locked_obj['measurements'])
+
                         # Draw center point with locked measurements
-                        # The center in measurements is relative to ROI, so add ROI offset
-                        locked_center_abs = (int(locked_obj['measurements']['center'][0]) + x, 
-                                             int(locked_obj['measurements']['center'][1]) + y)
-                        cv2.circle(display_frame, locked_center_abs, 6, (255, 0, 255), -1)
-                        cv2.circle(display_frame, locked_center_abs, 10, (255, 0, 255), 2)
-                                        
-                        # Draw measurement overlay for this locked object
+                        center_abs = (int(locked_obj['measurements']['center'][0]) + x, 
+                                     int(locked_obj['measurements']['center'][1]) + y)
+                        cv2.circle(display_frame, center_abs, 6, (255, 0, 255), -1)
+                        cv2.circle(display_frame, center_abs, 10, (255, 0, 255), 2)
+
+                        # Draw measurement overlay for each locked object
                         distance_info = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                        # Position this overlay differently to avoid overlap with others
-                        # Use a simple counter to position it
-                        all_locked_ids = list(locked_objects.keys())
-                        idx = all_locked_ids.index(locked_id)
+                        # Use smaller table if in multiple object mode
+                        # Position each overlay differently to avoid overlap
                         overlay_x = 20 + (idx % 3) * 400  # Position horizontally in 3 columns
                         overlay_y = 100 + (idx // 3) * 500  # Position vertically in rows
                         draw_measurement_overlay(display_frame, locked_obj['measurements'], (overlay_x, overlay_y), 
-                                                object_label="LOCKED OBJ", distance_mm=distance_info, is_multiple_objects=True, roi_rect=roi_rect)
-                                
-                # Status for multiple object detection
-                locked_count = len(locked_objects)
-                if locked_count > 0:
-                    status_text = f"✅ {len(detections)} OBJ DETECTED, {locked_count} LOCKED - Will remain locked until 'u' is pressed"
-                    status_color = (255, 0, 255)  # Purple to indicate locked objects
-                else:
-                    status_text = f"✅ DETECTED {len(detections)} OBJECTS IN ROI"
-                    status_color = (0, 255, 0)
-                                                                              
-                # Draw compact info panel in bottom right (away from ROI)
-                display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                draw_compact_info_panel(display_frame, current_marker_size_px, None, marker_distance=display_distance)
+                                                object_label=f"OBJ {idx+1} LOCKED", distance_mm=distance_info, 
+                                                is_multiple_objects=(not single_object_mode), roi_rect=roi_rect)
+
+                    # Draw compact info panel in bottom right with permanently locked values
+                    display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                    draw_compact_info_panel(display_frame, locked_marker_size_px, locked_object_size_px, marker_distance=display_distance)
+
+                    # Status
+                    status_text = f"🔒 {len(locked_objects)} OBJECTS LOCKED - Will remain locked until 'u' is pressed"
+                    status_color = (255, 0, 255)
+
+                    # Still show ROI for context (but no detection)
+                    roi_frame = frame[y:y+h, x:x+w].copy()
             else:
-                status_text = "🔍 SEARCHING FOR OBJECTS IN ROI (YOLO)..."
-                status_color = (255, 200, 0)
-                                    
-                # Still show ROI for context
-                roi_frame = frame[y:y+h, x:x+w].copy()
-                                    
-                # Draw info panel in bottom right: show current marker size (updating) + no object
-                display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
-                draw_compact_info_panel(display_frame, current_marker_size_px, None, marker_distance=display_distance)
-        
-        # Show ROI and binary mask in corner (for debugging) - moved to bottom left
-        if roi_frame is not None and roi_frame.size > 0 and roi_frame.shape[0] > 0 and roi_frame.shape[1] > 0:
-            roi_small = cv2.resize(roi_frame, (200, 150))
-            # Position at bottom left, above the status bar
-            y_pos = display_frame.shape[0] - 190
-            display_frame[y_pos:y_pos+150, 10:210] = roi_small
-            cv2.rectangle(display_frame, (10, y_pos-20), (210, y_pos+150), (255, 200, 0), 2)
-            cv2.putText(display_frame, "ROI View", (15, y_pos-5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
-    else:
-        status_text = "❌ NO MARKER - SHOW ARUCO TO CALIBRATE"
-        status_color = (0, 0, 255)
-        calibrated = False
-    
-    # Draw status
-    cv2.putText(display_frame, status_text, (20, display_frame.shape[0] - 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
-    
-    # Draw calibration info
-    if calibrated:
-        calib_text = f"Cal: {pixel_to_mm_ratio:.4f} mm/px | Ref: {KNOWN_MARKER_SIZE_MM}mm"
-        cv2.putText(display_frame, calib_text, 
-                    (display_frame.shape[1] - 580, display_frame.shape[0] - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-    
-    # Show frame in a normal resizable window
-    cv2.namedWindow('INSPECT-AR - Industrial Object Measurement System', cv2.WINDOW_NORMAL)
-    cv2.imshow('INSPECT-AR - Industrial Object Measurement System', display_frame)
-    
-    # Handle keypresses
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q'):
-        break
-    elif key == ord('s'):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"industrial_measurement_{timestamp}.jpg"
-        cv2.imwrite(filename, display_frame)
-        print(f"Saved: {filename}")
-    elif key == ord('c'):
-        use_contrast = not use_contrast
-    elif key == ord('r'):
-        calibrated = False
-        pixel_to_mm_ratio = None
-        is_locked = False
-        lock_activation_time = None  # Reset lock activation time
-        locked_objects.clear()  # Clear all locked objects
-        first_detection_times.clear()  # Clear all detection timers
-        consistent_detection_timers.clear()  # Clear all consistent detection timers
-        measurement_history.clear()
-        locked_marker_size_px = None
-        locked_object_size_px = None
-    elif key == ord('u'):
-        # Unlock detection - clear all locked objects and reset detection state
-        is_locked = False
-        lock_activation_time = None  # Reset lock activation time
-        locked_objects.clear()  # Clear all locked objects
-        first_detection_times.clear()  # Clear all detection timers
-        consistent_detection_timers.clear()  # Clear all consistent detection timers
-        measurement_history.clear()
-        locked_object_size_px = None  # Clear object size but keep marker size
-        print("🔓 Unlocked - resuming YOLO detection for all objects")
-    elif key == ord('f'):
-        cv2.waitKey(0)
+                # Multiple object detection mode - detect and measure all objects in ROI
+                # NOTE: In multiple object mode, we allow continuous detection even when some objects are locked
+                detections, roi_frame = detect_objects_with_yolo_in_roi(
+                    frame, roi_rect, yolo_detector, marker_corners=corners[0]
+                )
 
-cap.release()
-cv2.destroyAllWindows()
+                # Process all detected objects
+                if detections:
+                    detection_count += len(detections)
 
+                    # Use corrected pixel-to-mm ratio if available, otherwise use base ratio
+                    current_pixel_to_mm_ratio = corrected_pixel_to_mm_ratio if 'corrected_pixel_to_mm_ratio' in locals() else pixel_to_mm_ratio
+
+                    # Process each detected object
+                    for i, detection in enumerate(detections):
+                        contour = detection.get('contour')
+                        if contour is not None:
+                            # Create a unique ID for this detection in multiple object mode
+                            bbox = detection['bbox']
+                            x1, y1, x2, y2 = [int(coord) for coord in bbox]
+
+                            # Check if this detection is close to any locked object
+                            detection_id = None
+                            for locked_id, locked_obj in locked_objects.items():
+                                # Calculate distance between centers
+                                if 'center' in locked_obj['measurements']:
+                                    locked_center_x = int(locked_obj['measurements']['center'][0]) + x
+                                    locked_center_y = int(locked_obj['measurements']['center'][1]) + y
+                                    detection_center_x = x1 + (x2 - x1) // 2
+                                    detection_center_y = y1 + (y2 - y1) // 2
+
+                                    distance = np.sqrt((locked_center_x - detection_center_x)**2 + (locked_center_y - detection_center_y)**2)
+
+                                    # If the detection is close to a locked object, use the same ID
+                                    if distance < 100:  # Threshold in pixels
+                                        detection_id = locked_id
+                                        break
+
+                            # If no close locked object found, create a new ID
+                            if detection_id is None:
+                                bbox_str = f"{x1}_{y1}_{x2-x1}_{y2-y1}_{int(time.time())}"
+                                detection_id = f"obj_{bbox_str}"
+
+                            # Measure object with rotation and tilt correction
+                            measurements, rect = measure_object_with_tilt_correction(contour, current_pixel_to_mm_ratio, marker_tilt_angles)
+
+                            if measurements is not None:
+                                # If this detection corresponds to a locked object, skip processing and just draw the locked version
+                                if detection_id in locked_objects:
+                                    # Draw the locked object (this will be done later in the display section)
+                                    continue
+
+                                # Start or continue timer for consistent detection for this object
+                                current_time = time.time()
+                                if detection_id not in first_detection_times:
+                                    first_detection_times[detection_id] = current_time
+                                    consistent_detection_timers[detection_id] = 0.0
+                                else:
+                                    consistent_detection_timers[detection_id] = current_time - first_detection_times[detection_id]
+
+                                # Apply advanced smoothing to reduce fluctuation
+                                smoothed_measurements = apply_advanced_smoothing(detection_id, measurements)
+
+                                # Check if we should lock onto this object (5 seconds)
+                                # In multiple object mode, we can lock individual objects independently
+                                if consistent_detection_timers[detection_id] >= LOCK_THRESHOLD_SECONDS:
+                                    # Only lock if not already locked
+                                    if detection_id not in locked_objects:
+                                        locked_objects[detection_id] = {
+                                            'measurements': smoothed_measurements.copy(),
+                                            'rect': rect,
+                                            'box': cv2.boxPoints(rect),
+                                            'confidence': detection['confidence']
+                                        }
+                                        locked_objects[detection_id]['box'] = np.intp(locked_objects[detection_id]['box'])
+                                        locked_objects[detection_id]['box'][:, 0] += x
+                                        locked_objects[detection_id]['box'][:, 1] += y
+                                        print(f"🔒 LOCKED onto object {i+1} (ID: {detection_id}, Conf: {detection['confidence']:.2f}) after {consistent_detection_timers[detection_id]:.1f}s")
+
+                                # Draw rotated rectangle for this object
+                                # If object is locked, use locked rectangle, otherwise use current detection
+                                if detection_id in locked_objects:
+                                    # Use the locked box which is already offset
+                                    cv2.drawContours(display_frame, [locked_objects[detection_id]['box']], 0, (255, 0, 255), 3)
+                                    # Draw dimension lines with locked values
+                                    draw_dimension_lines(display_frame, locked_objects[detection_id]['box'], locked_objects[detection_id]['measurements'])
+                                    # Draw center point with locked measurements
+                                    # The center in measurements is relative to ROI, so add ROI offset
+                                    locked_center_abs = (int(locked_objects[detection_id]['measurements']['center'][0]) + x, 
+                                                 int(locked_objects[detection_id]['measurements']['center'][1]) + y)
+                                    cv2.circle(display_frame, locked_center_abs, 6, (255, 0, 255), -1)
+                                    cv2.circle(display_frame, locked_center_abs, 10, (255, 0, 255), 2)
+                                else:
+                                    # Use current detection
+                                    box = draw_rotated_rectangle(display_frame, rect, (x, y), 
+                                                                color=(0, 255, 0), thickness=2)
+                                    # Draw dimension lines with smoothed values
+                                    draw_dimension_lines(display_frame, box, smoothed_measurements)
+                                    # Draw center point
+                                    center_abs = (int(smoothed_measurements['center'][0]) + x, 
+                                                 int(smoothed_measurements['center'][1]) + y)
+                                    cv2.circle(display_frame, center_abs, 4, (0, 255, 0), -1)
+                                    cv2.circle(display_frame, center_abs, 7, (0, 255, 0), 1)
+
+                                # Draw detection bbox from YOLO
+                                bbox = detection['bbox']
+                                bbox_x1, bbox_y1, bbox_x2, bbox_y2 = [int(coord) for coord in bbox]
+                                cv2.rectangle(roi_frame, (bbox_x1, bbox_y1), (bbox_x2, bbox_y2), (0, 255, 255), 1)
+
+                                # Draw confidence and detection info
+                                conf_text = f"Conf: {detection['confidence']:.2f}"
+                                cv2.putText(roi_frame, conf_text, (bbox_x1, bbox_y1 - 5),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+
+                                # Draw measurement overlay with unique label for each object
+                                distance_info = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                                # Position each overlay differently to avoid overlap
+                                overlay_x = 20 + (i % 3) * 400  # Position horizontally in 3 columns
+                                overlay_y = 100 + (i // 3) * 500  # Position vertically in rows
+
+                                # If object is locked, use locked measurements
+                                if detection_id in locked_objects:
+                                    draw_measurement_overlay(display_frame, locked_objects[detection_id]['measurements'], (overlay_x, overlay_y), 
+                                                            object_label=f"OBJ {i+1} LOCKED", distance_mm=distance_info, is_multiple_objects=True, roi_rect=roi_rect)
+                                else:
+                                    draw_measurement_overlay(display_frame, smoothed_measurements, (overlay_x, overlay_y), 
+                                                            object_label=f"OBJ {i+1}", distance_mm=distance_info, is_multiple_objects=True, roi_rect=roi_rect)
+
+                                # Draw detection bbox from YOLO
+                                bbox = detection['bbox']
+                                bbox_x1, bbox_y1, bbox_x2, bbox_y2 = [int(coord) for coord in bbox]
+                                cv2.rectangle(roi_frame, (bbox_x1, bbox_y1), (bbox_x2, bbox_y2), (0, 255, 255), 1)
+
+                                # Draw confidence and detection info
+                                conf_text = f"Conf: {detection['confidence']:.2f}"
+                                cv2.putText(roi_frame, conf_text, (bbox_x1, bbox_y1 - 5),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+
+                    # Draw all locked objects that weren't detected in this frame
+                    for locked_id, locked_obj in locked_objects.items():
+                        # Check if this locked object was not just processed
+                        was_detected_this_frame = False
+                        for detection in detections:
+                            contour = detection.get('contour')
+                            if contour is not None:
+                                bbox = detection['bbox']
+                                x1, y1, x2, y2 = [int(coord) for coord in bbox]
+                                # Calculate distance between centers
+                                if 'center' in locked_obj['measurements']:
+                                    locked_center_x = int(locked_obj['measurements']['center'][0]) + x
+                                    locked_center_y = int(locked_obj['measurements']['center'][1]) + y
+                                    detection_center_x = x1 + (x2 - x1) // 2
+                                    detection_center_y = y1 + (y2 - y1) // 2
+
+                                    distance = np.sqrt((locked_center_x - detection_center_x)**2 + (locked_center_y - detection_center_y)**2)
+
+                                    if distance < 100:  # Same threshold as used for ID assignment
+                                        was_detected_this_frame = True
+                                        break
+
+                        # If this locked object wasn't detected this frame, draw it separately
+                        if not was_detected_this_frame:
+                            # Use the locked box which is already offset
+                            cv2.drawContours(display_frame, [locked_obj['box']], 0, (255, 0, 255), 3)
+                            # Draw dimension lines with locked values
+                            draw_dimension_lines(display_frame, locked_obj['box'], locked_obj['measurements'])
+                            # Draw center point with locked measurements
+                            # The center in measurements is relative to ROI, so add ROI offset
+                            locked_center_abs = (int(locked_obj['measurements']['center'][0]) + x, 
+                                                 int(locked_obj['measurements']['center'][1]) + y)
+                            cv2.circle(display_frame, locked_center_abs, 6, (255, 0, 255), -1)
+                            cv2.circle(display_frame, locked_center_abs, 10, (255, 0, 255), 2)
+
+                            # Draw measurement overlay for this locked object
+                            distance_info = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                            # Position this overlay differently to avoid overlap with others
+                            # Use a simple counter to position it
+                            all_locked_ids = list(locked_objects.keys())
+                            idx = all_locked_ids.index(locked_id)
+                            overlay_x = 20 + (idx % 3) * 400  # Position horizontally in 3 columns
+                            overlay_y = 100 + (idx // 3) * 500  # Position vertically in rows
+                            draw_measurement_overlay(display_frame, locked_obj['measurements'], (overlay_x, overlay_y), 
+                                                    object_label="LOCKED OBJ", distance_mm=distance_info, is_multiple_objects=True, roi_rect=roi_rect)
+
+                    # Status for multiple object detection
+                    locked_count = len(locked_objects)
+                    if locked_count > 0:
+                        status_text = f"✅ {len(detections)} OBJ DETECTED, {locked_count} LOCKED - Will remain locked until 'u' is pressed"
+                        status_color = (255, 0, 255)  # Purple to indicate locked objects
+                    else:
+                        status_text = f"✅ DETECTED {len(detections)} OBJECTS IN ROI"
+                        status_color = (0, 255, 0)
+
+                    # Draw compact info panel in bottom right (away from ROI)
+                    display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                    draw_compact_info_panel(display_frame, current_marker_size_px, None, marker_distance=display_distance)
+                else:
+                    status_text = "🔍 SEARCHING FOR OBJECTS IN ROI (YOLO)..."
+                    status_color = (255, 200, 0)
+
+                    # Still show ROI for context
+                    roi_frame = frame[y:y+h, x:x+w].copy()
+
+                    # Draw info panel in bottom right: show current marker size (updating) + no object
+                    display_distance = marker_distances[0] if marker_distances is not None and len(marker_distances) > 0 else None
+                    draw_compact_info_panel(display_frame, current_marker_size_px, None, marker_distance=display_distance)
+
+            # Show ROI and binary mask in corner (for debugging) - moved to bottom left
+            if roi_frame is not None and roi_frame.size > 0 and roi_frame.shape[0] > 0 and roi_frame.shape[1] > 0:
+                roi_small = cv2.resize(roi_frame, (200, 150))
+                # Position at bottom left, above the status bar
+                y_pos = display_frame.shape[0] - 190
+                display_frame[y_pos:y_pos+150, 10:210] = roi_small
+                cv2.rectangle(display_frame, (10, y_pos-20), (210, y_pos+150), (255, 200, 0), 2)
+                cv2.putText(display_frame, "ROI View", (15, y_pos-5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        else:
+            status_text = "❌ NO MARKER - SHOW ARUCO TO CALIBRATE"
+            status_color = (0, 0, 255)
+            calibrated = False
+
+        # Draw status
+        cv2.putText(display_frame, status_text, (20, display_frame.shape[0] - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+
+        # Draw calibration info
+        if calibrated:
+            calib_text = f"Cal: {pixel_to_mm_ratio:.4f} mm/px | Ref: {KNOWN_MARKER_SIZE_MM}mm"
+            cv2.putText(display_frame, calib_text, 
+                        (display_frame.shape[1] - 580, display_frame.shape[0] - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+        # Show frame in a normal resizable window
+        cv2.namedWindow('INSPECT-AR - Industrial Object Measurement System', cv2.WINDOW_NORMAL)
+        cv2.imshow('INSPECT-AR - Industrial Object Measurement System', display_frame)
+
+        # Handle keypresses
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('s'):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"industrial_measurement_{timestamp}.jpg"
+            cv2.imwrite(filename, display_frame)
+            print(f"Saved: {filename}")
+        elif key == ord('c'):
+            use_contrast = not use_contrast
+        elif key == ord('r'):
+            calibrated = False
+            pixel_to_mm_ratio = None
+            is_locked = False
+            lock_activation_time = None  # Reset lock activation time
+            locked_objects.clear()  # Clear all locked objects
+            first_detection_times.clear()  # Clear all detection timers
+            consistent_detection_timers.clear()  # Clear all consistent detection timers
+            measurement_history.clear()
+            locked_marker_size_px = None
+            locked_object_size_px = None
+        elif key == ord('u'):
+            # Unlock detection - clear all locked objects and reset detection state
+            is_locked = False
+            lock_activation_time = None  # Reset lock activation time
+            locked_objects.clear()  # Clear all locked objects
+            first_detection_times.clear()  # Clear all detection timers
+            consistent_detection_timers.clear()  # Clear all consistent detection timers
+            measurement_history.clear()
+            locked_object_size_px = None  # Clear object size but keep marker size
+            print("🔓 Unlocked - resuming YOLO detection for all objects")
+        elif key == ord('f'):
+            cv2.waitKey(0)
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+
+
+if __name__ == "__main__":
+    main()

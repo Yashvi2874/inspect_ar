@@ -25,20 +25,60 @@ class BLIPCaptioner:
             device: 'cpu' or 'cuda' (handled by transformers library)
         """
         self.device = device or "cpu"
-        
+
+        # BLIP needs roughly 1.5-2 GB of RAM to materialise its weights. When
+        # that is not available the load does not raise a Python exception --
+        # the process dies with a native allocation failure, which no
+        # try/except can catch. Checking first turns an uncatchable crash into
+        # an ordinary degraded start.
+        if not self._enough_memory():
+            self.processor = None
+            self.model = None
+            return
+
         try:
-            print("📌 Loading BLIP model and processor...")
+            print("[..] Loading BLIP model and processor...")
             self.processor = BlipProcessor.from_pretrained(
                 "Salesforce/blip-image-captioning-base"
             )
             self.model = BlipForConditionalGeneration.from_pretrained(
                 "Salesforce/blip-image-captioning-base"
             )
-            print("✅ BLIP model loaded successfully")
+            print("[ok] BLIP model loaded")
         except Exception as e:
-            print(f"⚠️ Error loading BLIP model: {e}")
+            print(f"[warn] Could not load BLIP, captions disabled: {e}")
             self.processor = None
             self.model = None
+
+    @property
+    def available(self) -> bool:
+        """True when the model really loaded and captions will be meaningful."""
+        return self.model is not None and self.processor is not None
+
+    # Headroom in bytes required before attempting the load.
+    REQUIRED_MEMORY = 2_000_000_000
+
+    @classmethod
+    def _enough_memory(cls) -> bool:
+        """True when there is plausibly enough free RAM to load BLIP.
+
+        Returns True when psutil is unavailable: refusing to load on a machine
+        we cannot measure would be worse than trying.
+        """
+        try:
+            import psutil
+        except ImportError:
+            return True
+
+        available = psutil.virtual_memory().available
+        if available >= cls.REQUIRED_MEMORY:
+            return True
+
+        print(f"[warn] Only {available / 1e9:.1f} GB RAM available; BLIP needs "
+              f"about {cls.REQUIRED_MEMORY / 1e9:.1f} GB.")
+        print("[warn] Skipping BLIP rather than risking a native crash. "
+              "Close other programs, or run with INSPECT_AR_NO_BLIP=1.")
+        return False
     
     def generate_caption(self, image: np.ndarray) -> str:
         """

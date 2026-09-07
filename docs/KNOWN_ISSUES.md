@@ -2,7 +2,8 @@
 
 Every item here was reproduced by running the code, not inferred by reading it.
 
-The original audit of this project found 14 defects. Ten have since been fixed;
+The original audit of this project found 14 defects. Twelve have since been
+fixed;
 they are kept below under [Fixed](#fixed) rather than deleted, because the
 history of what was wrong is part of what makes the current numbers credible.
 
@@ -36,31 +37,25 @@ that same evaluation code against the saved weights does not reproduce it.
 
 It also boxes rivets and fasteners as damage.
 
-**Fix:** retrain with category ids remapped to a single consistent space, and a
-metric that compares labels.
+**Fix — written and tested, needs a GPU run.**
+`backend/training/train_detector.py` retrains with both causes addressed:
+every dataset declares an explicit mapping into one shared 7-class label space
+(so v2's "defect" is its own class, not merged into "crack"), the head is sized
+from that space so no class goes untrained, metrics are class-aware, per-class
+precision and recall are printed each epoch, and `class_names` is saved into
+the checkpoint so no future loader has to guess what the indices mean.
+
+Verified on the real annotations: the remap yields defect 1448 | crack 996 |
+dent 1346 | missing-head 990 | paint-off 789 | scratch 222, with no collision.
+The metric was checked against perfectly-located boxes carrying deliberately
+wrong labels — the old class-agnostic measure scores 0.500 there, the new
+class-aware one scores 0.000.
+
+Only the training run itself remains; it is impractical on CPU.
 
 ---
 
-### 2. Dimension measurement is polarity sensitive
-`backend/models/dimension_detector.py:40`
-
-Uses `cv2.THRESH_BINARY | cv2.THRESH_OTSU`, which selects **bright** pixels. For
-a dark object on a light background the largest contour can be the background.
-
-Measured against a synthetic 300×160 px object at 0.5 mm/px (truth 150.0 × 80.0 mm):
-
-| Scenario | Result | Error |
-|---|---|---|
-| Bright object, padded bbox | 150.0 × 80.0 mm | correct |
-| Dark object, tight bbox | 149.5 × 79.5 mm | 0.3% / 0.6% |
-| Dark object, padded bbox | 189.5 × 119.5 mm | 26% / 49% |
-
-**Fix:** use `THRESH_BINARY_INV`, or reuse the adaptive-threshold routine in
-`industrial_measurement.py:detect_object_in_roi`, which handles both polarities.
-
----
-
-### 3. Preprocessing discards colour
+### 2. Preprocessing discards colour
 `backend/utils/image_processor.py:40`
 
 `preprocess()` converts BGR → grayscale, applies CLAHE, then converts back to
@@ -76,22 +71,7 @@ the original colour frame.
 
 ---
 
-### 4. `industrial_measurement.py` cannot be imported
-`backend/industrial_measurement.py`
-
-No `if __name__ == "__main__":` guard across ~1,550 lines. At module scope it
-calls `input()` twice (lines 35, 45), opens `cv2.VideoCapture(0)` (line 967) and
-enters an infinite render loop (line 1012). Importing it therefore launches the
-whole webcam application, or dies with `EOFError` under non-interactive stdin.
-
-The pipeline no longer imports it, so this blocks nothing today — but it makes
-the file impossible to unit-test or reuse.
-
-**Fix:** wrap the body in a `main()` behind a `__main__` guard.
-
----
-
-### 5. Pose estimation uses placeholder camera intrinsics
+### 3. Pose estimation uses placeholder camera intrinsics
 `backend/industrial_measurement.py:58-65`
 
 `CAMERA_MATRIX` is hard-coded to fx = fy = 800, cx = 640, cy = 360, with zero
@@ -108,10 +88,10 @@ result.
 
 ---
 
-### 6. The anomaly autoencoder over-fires on texture
+### 4. The anomaly autoencoder over-fires on texture
 `backend/models/anomaly_autoencoder.py`
 
-It reliably scores damage above clean skin (1.53× on validation, 8 of 10
+It reliably scores damage above clean skin (1.70× on validation, 8 of 10
 images), but it also fires on rough or weathered surface, and returns more
 regions than there are defects.
 
@@ -120,18 +100,31 @@ minimum region area. It is a screening tool, not a localiser.
 
 ---
 
-### 7. BLIP captioning segfaults on load
+### 5. BLIP captions are generic, and it is memory-hungry
 `backend/models/blip_wrapper.py`
 
-Constructing `BLIPCaptioner` crashes the process natively — not a Python
-exception, so it cannot be caught by the pipeline's `try/except`. The pipeline
-defaults it off, and `test_integrated_pipeline.py` honours `INSPECT_AR_NO_BLIP=1`.
+Two separate things, previously conflated in this document.
 
-Also note it fetches ~1 GB from Hugging Face on first use, so it needs network.
+**Not a defect:** BLIP loads and runs correctly. An earlier version of these
+notes claimed it "segfaults on load". That was wrong — the crashes were caused
+by other jobs on the machine consuming RAM at the time, not by BLIP. Verified
+by loading it alongside the Faster R-CNN detector: both fit.
+
+**Real constraint:** materialising its weights needs roughly 2 GB of free RAM,
+and when that is unavailable the process dies with a native allocation failure
+that no `try`/`except` can catch. `BLIPCaptioner` therefore checks available
+memory before loading and stands down with a message instead. The pipeline
+drops the captioner entirely when it did not load, so the captioning step is
+skipped rather than writing "Model not loaded" against every detection.
+
+**Real limitation:** the captions are generic. This is stock
+`blip-image-captioning-base` with no fine-tuning on damage, so it describes the
+photograph ("a picture of a camera lens") rather than the defect. Fine-tuning
+it is on the roadmap.
 
 ---
 
-### 8. No trained Keras classifier exists
+### 6. No trained Keras classifier exists
 `backend/models/vgg16_wrapper.py`
 
 The VGG16 path builds its architecture correctly but has no weights to load: no
@@ -141,7 +134,7 @@ wrapper now says so loudly and the pipeline leaves it off by default.
 
 ---
 
-### 9. YOLO ships stock COCO weights
+### 7. YOLO ships stock COCO weights
 `backend/models/yolo_detector.py:28`
 
 `YOLO('yolov8n.pt')` — no aircraft-damage classes. On real dataset images it
@@ -169,6 +162,8 @@ These were real and are resolved in the current tree.
 | 8 | Emoji in `print()` raised `UnicodeEncodeError` under a cp1252 console — worst inside an exception handler, which crashed while reporting the original error | Replaced with ASCII markers |
 | 9 | `test_integrated_pipeline.py` never called `calibrate()`, so the "dimension" test exercised no dimension code | Calibration added, with an explicit message when no marker is present |
 | 10 | `example_usage.py` used `np` before importing it, and read `width`/`area` keys the producer never emitted | Import moved to module scope; keys corrected |
+| 11 | Dimension measurement was polarity sensitive — `THRESH_BINARY` always keeps the brighter group, so a dark part on a light panel measured the panel (26% / 49% error) | Polarity is now inferred by comparing the ROI border with its centre, then `THRESH_BINARY_INV` is used when the object is the darker one. All four dark/bright x tight/padded cases now measure 149.5 x 79.5 mm against a 150 x 80 truth |
+| 12 | `industrial_measurement.py` had no `__main__` guard — importing it prompted on stdin and opened a webcam, so it could not be reused or tested | Prompts moved into `configure()`, the application body into `main()`, behind a guard. Module-level defaults let it import with stdin closed; the five smoothing globals `apply_advanced_smoothing()` reads stay at module scope |
 
 Also fixed, found during the same work:
 
