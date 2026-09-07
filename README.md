@@ -22,9 +22,9 @@ Hindustan Aeronautics Limited × IIIT Dharwad · 9–10 January 2026
 
 Point a camera at an aircraft panel with a **printed ArUco marker** beside it —
 a square black-and-white pattern, like a QR code, whose real-world size you
-already know. Because the software knows the marker is (say) 47 mm wide and can
-see that it occupies 99 pixels, it derives a scale of millimetres-per-pixel and
-can then measure anything else in the frame.
+already know. In the frame below the marker is 47 mm wide and occupies about
+172 pixels, so the software derives a scale of 0.2672 millimetres per pixel and
+can then measure anything else in view without touching it.
 
 On top of that scale sit two independent damage detectors, which answer
 different questions:
@@ -36,11 +36,13 @@ different questions:
 
 Built in 24 hours at HAL AEROTHON '26 by Team Zenith, and developed since.
 
-![INSPECT-AR measuring a card against a 47 mm ArUco marker](docs/images/hero-measurement.jpg)
+![INSPECT-AR measuring a gear and running damage detection](docs/images/integration.jpeg)
 
-*The live application. The marker at left is 47 mm wide and occupies 99 px,
-giving a scale of 0.4970 mm/px — shown along the bottom edge. The card is then
-measured at 49.8 x 32.7 mm without ever touching it.*
+*The live application, uncropped. The printed ArUco marker sets the scale at
+0.2672 mm/px against a 47 mm reference, the gear is measured at 51.1 x 32.4 mm
+without contact, and the damage detector overlays its findings on the same
+frame. Detector class indices are shown raw here — see [Results](#results) for
+why those labels are not yet trustworthy.*
 
 ---
 
@@ -97,7 +99,7 @@ are approximate until you substitute a real calibration for your camera.
 | Measurement | Value |
 |---|---|
 | Calibration error | **0.14%** (synthetic 100 px marker declared 50 mm) |
-| Dimension accuracy, bright-on-dark | **149.5 × 79.5 mm** against a 150 × 80 mm truth (0.3% / 0.6%) |
+| Dimension accuracy | **149.5 × 79.5 mm** against a 150 × 80 mm truth (0.3% / 0.6%), on dark-on-light and bright-on-dark alike |
 
 ### Supervised detector
 
@@ -119,6 +121,15 @@ reproduce it. Two further issues are real and worth stating:
 
 In practice it is a strong *region proposer* on aircraft skin and a weak
 *classifier*. It also boxes rivets and fasteners as damage.
+
+**The cause is fixed, the retrain is not.**
+`backend/training/train_detector.py` maps every dataset into one shared 7-class
+space so the generic "defect" stays separate from "crack", sizes the head from
+that space so no class goes untrained, scores class-aware metrics, and saves
+`class_names` into the checkpoint. Verified against the real annotations —
+defect 1448, crack 996, dent 1346, missing-head 990, paint-off 789,
+scratch 222, no collision. Only the training run remains, and it needs a GPU;
+until then the checkpoint above is what ships.
 
 ### Unsupervised anomaly detection
 
@@ -190,7 +201,7 @@ size limit and are gitignored.
 
 | File | Size | How to obtain |
 |---|---|---|
-| `backend/models/best_model.pth` | 165 MB | Train with the Faster R-CNN script, or copy your own |
+| `backend/models/best_model.pth` | 165 MB | `python backend/training/train_detector.py` (needs a GPU), or copy your own |
 | `backend/models/anomaly_autoencoder.pth` | 1 MB | `python backend/training/train_autoencoder.py` |
 | `yolov8n.pt` | 6 MB | Downloaded automatically by `ultralytics` |
 
@@ -220,7 +231,14 @@ the object beside it.
 | `u` | unlock locked objects |
 | `f` | freeze frame |
 
-Needs a webcam and a display — it is an interactive OpenCV window, not a library.
+Needs a webcam and a display for the interactive window. The module is also
+importable: it sits behind a `__main__` guard, so its measurement helpers can be
+reused without launching the application.
+
+```python
+from industrial_measurement import compute_pixel_to_mm_ratio
+ratio, _ = compute_pixel_to_mm_ratio(marker_corners, known_size_mm=47.0)
+```
 
 ### Integrated pipeline
 
