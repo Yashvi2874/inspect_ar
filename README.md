@@ -290,8 +290,11 @@ Found by auditing our own code after the hackathon. Full detail with file and
 line references in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 - The shipped detector's class labels are unreliable: two of its eight classes
-  were never trained yet still fire. `backend/training/train_detector.py`
-  fixes the cause and is ready to run, but needs a GPU.
+  were never trained yet still fire, and class 1 merges two different source
+  categories. `backend/training/train_detector.py` fixes both causes; the
+  replacement checkpoint has not been trained yet, so the old one still ships.
+- `scratch` has only 222 training boxes against `dent`'s 1,346. Any retrain
+  should expect weak recall on it until that imbalance is addressed.
 - Preprocessing converts to grayscale and back, discarding colour for every
   stage except the detector, which runs on the original frame.
 - Pose-derived distance and tilt use placeholder camera intrinsics. The
@@ -304,9 +307,14 @@ line references in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 ## Roadmap
 
-- [ ] Run `backend/training/train_detector.py` on a GPU to replace the
-      shipped checkpoint (the collision fix and class-aware metric are written
-      and tested; only the training run remains)
+- [ ] Train and ship the remapped detector with
+      `backend/training/train_detector.py`. The collision fix, the class-aware
+      metric and the 7-class label space are written and verified; only the
+      run remains. Measured at 7.5 min/epoch on an RTX 4070 Laptop at batch 6
+      and 640px, so a full 25 epochs is about three hours - not the cloud job
+      this once assumed.
+- [ ] Address the class imbalance before trusting per-class numbers - weighted
+      sampling, or more `scratch` data
 - [ ] Fine-tune BLIP on damage descriptions so captions are about the defect
 - [ ] OCR for part traceability - read serial numbers and stencilled IDs so
       every detection is logged against the component it belongs to
@@ -324,7 +332,7 @@ line references in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 |---|---|
 | Yashasvi Gupta | [@Yashvi2874](https://github.com/Yashvi2874) |
 | Aastha Shah | [@aasthans-2508](https://github.com/aasthans-2508) |
-| Sai Parcha | - |
+| Sai Parcha | [@SaiParcha](https://github.com/SaiParcha) |
 
 Mentors: **Dr. Shailesh Nikam** and **Mr. Kaustubh Kulkarni**, for guidance on
 system architecture, backend structuring, ArUco integration and model

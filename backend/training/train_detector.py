@@ -56,6 +56,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -305,10 +306,17 @@ def main():
     optimiser = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=5e-4)
     scheduler = torch.optim.lr_scheduler.StepLR(optimiser, step_size=8, gamma=0.1)
 
+    # An epoch is several minutes long. Without step-level output the run is
+    # indistinguishable from a hang, which is exactly how an earlier attempt
+    # wasted an hour before anyone noticed it had died.
+    steps_per_epoch = max(1, len(train_loader))
+    report_every = max(1, steps_per_epoch // 20)
+
     best_f1 = 0.0
     for epoch in range(1, args.epochs + 1):
         model.train()
         total, seen = 0.0, 0
+        epoch_start = time.time()
         for batch in train_loader:
             if batch is None:
                 continue
@@ -322,6 +330,14 @@ def main():
             optimiser.step()
             total += loss.item()
             seen += 1
+
+            if seen % report_every == 0:
+                elapsed = time.time() - epoch_start
+                rate = elapsed / seen
+                remaining = (steps_per_epoch - seen) * rate
+                print(f"  epoch {epoch} | step {seen}/{steps_per_epoch} "
+                      f"| loss {total / seen:.4f} | {rate:.2f}s/step "
+                      f"| ~{remaining / 60:.1f} min left in epoch", flush=True)
         scheduler.step()
 
         model.eval()
