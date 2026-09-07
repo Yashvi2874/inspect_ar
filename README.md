@@ -4,15 +4,15 @@
 
 **From Manual Inspection to AI Inspector**
 
-Computer-vision inspection for aircraft surfaces — measure a part in millimetres
+Computer-vision inspection for aircraft surfaces - measure a part in millimetres
 from a single camera, and find damage on it.
 
-🥉 **Third Prize — HAL AEROTHON '26**
+🥉 **Third Prize - HAL AEROTHON '26**
 National-Level Aerospace Innovation Hackathon
-Hindustan Aeronautics Limited × IIIT Dharwad · 9–10 January 2026
+Hindustan Aeronautics Limited × IIIT Dharwad · 9-10 January 2026
 
 <img src="docs/images/win-team.jpg" alt="Team Zenith with the Third Prize cheque at IIIT Dharwad" width="330">
-<img src="docs/images/win-ceremony.jpg" alt="Third Prize being presented at HAL AEROTHON '26" width="430">
+<img src="docs/images/getting.jpeg" alt="Third Prize being presented at HAL AEROTHON '26" width="430">
 
 </div>
 
@@ -20,7 +20,7 @@ Hindustan Aeronautics Limited × IIIT Dharwad · 9–10 January 2026
 
 ## What this is
 
-Point a camera at an aircraft panel with a **printed ArUco marker** beside it —
+Point a camera at an aircraft panel with a **printed ArUco marker** beside it -
 a square black-and-white pattern, like a QR code, whose real-world size you
 already know. In the frame below the marker is 47 mm wide and occupies about
 172 pixels, so the software derives a scale of 0.2672 millimetres per pixel and
@@ -30,9 +30,9 @@ On top of that scale sit two independent damage detectors, which answer
 different questions:
 
 - A **supervised** detector, trained on labelled aircraft damage, that names
-  what it finds — crack, dent, missing head, paint-off, scratch.
+  what it finds - crack, dent, missing head, paint-off, scratch.
 - An **unsupervised** autoencoder, trained only on undamaged skin, that flags
-  anything unlike normal surface — including damage nobody ever labelled.
+  anything unlike normal surface - including damage nobody ever labelled.
 
 Built in 24 hours at HAL AEROTHON '26 by Team Zenith, and developed since.
 
@@ -41,7 +41,7 @@ Built in 24 hours at HAL AEROTHON '26 by Team Zenith, and developed since.
 *The live application, uncropped. The printed ArUco marker sets the scale at
 0.2672 mm/px against a 47 mm reference, the gear is measured at 51.1 x 32.4 mm
 without contact, and the damage detector overlays its findings on the same
-frame. Detector class indices are shown raw here — see [Results](#results) for
+frame. Detector class indices are shown raw here - see [Results](#results) for
 why those labels are not yet trustworthy.*
 
 ---
@@ -55,12 +55,12 @@ with the commands in [Running](#running).
 |---|---|---|
 | ArUco calibration (px → mm) | **Working** | 0.14% error against a synthetic ground-truth marker |
 | Standalone measurement app | **Working** | Real-time overlay; needs a webcam and a printed marker |
-| Faster R-CNN damage detector | **Working** | Real trained weights; localises well, class labels are unreliable — see [Results](#results) |
+| Faster R-CNN damage detector | **Working** | Real trained weights; localises well, class labels are unreliable - see [Results](#results) |
 | Anomaly autoencoder + heatmap | **Working** | Unsupervised; defect regions score 1.7× clean skin |
-| Integrated pipeline | **Working** | ~1.8–2.0 s per 640×640 frame, CPU-only |
+| Integrated pipeline | **Working** | ~1.8-2.0 s per 640×640 frame, CPU-only |
 | HTTP API | **Working** | 5 endpoints, `backend/app.py` |
 | Dimension measurement | **Working** | Polarity-aware thresholding: 0.3% / 0.6% error on both dark-on-light and bright-on-dark |
-| BLIP captioning | **Working** | Needs ~2 GB free RAM; skips itself cleanly below that. Captions are generic — the model is not fine-tuned on damage |
+| BLIP captioning | **Working** | Needs ~2 GB free RAM; skips itself cleanly below that. Captions are generic - the model is not fine-tuned on damage |
 | VGG16 classifier | **Legacy, off by default** | No trained Keras checkpoint exists anywhere in the project |
 | YOLOv8 | **Off by default** | Ships stock COCO weights, which have no damage classes |
 
@@ -104,10 +104,10 @@ are approximate until you substitute a real calibration for your camera.
 ### Supervised detector
 
 Faster R-CNN ResNet50-FPN, 8-class head, trained for 23 epochs on two
-concatenated Roboflow exports — 5,672 images, 6,219 boxes.
+concatenated Roboflow exports - 5,672 images, 6,219 boxes.
 
 **Read this before trusting its labels.** The checkpoint records `f1 = 0.642`,
-but that figure was computed *class-agnostically* — the training script matched
+but that figure was computed *class-agnostically* - the training script matched
 boxes by IoU and never compared predicted labels to ground-truth labels.
 Re-running that same evaluation code against the saved weights does not
 reproduce it. Two further issues are real and worth stating:
@@ -115,8 +115,8 @@ reproduce it. Two further issues are real and worth stating:
 - **Class 1 is a collision.** The two source datasets were concatenated without
   remapping category IDs, so class 1 mixes one dataset's generic "defect" with
   the other's "crack". It is reported as `crack_or_defect` for that reason.
-- **Classes 6 and 7 were never trained** — no annotation in either dataset
-  carries those IDs — yet they still fire, sometimes above 0.9 confidence. They
+- **Classes 6 and 7 were never trained** - no annotation in either dataset
+  carries those IDs - yet they still fire, sometimes above 0.9 confidence. They
   are labelled `untrained_6` / `untrained_7` and flagged in the output.
 
 In practice it is a strong *region proposer* on aircraft skin and a weak
@@ -126,14 +126,14 @@ In practice it is a strong *region proposer* on aircraft skin and a weak
 `backend/training/train_detector.py` maps every dataset into one shared 7-class
 space so the generic "defect" stays separate from "crack", sizes the head from
 that space so no class goes untrained, scores class-aware metrics, and saves
-`class_names` into the checkpoint. Verified against the real annotations —
+`class_names` into the checkpoint. Verified against the real annotations -
 defect 1448, crack 996, dent 1346, missing-head 990, paint-off 789,
 scratch 222, no collision. Only the training run remains, and it needs a GPU;
 until then the checkpoint above is what ships.
 
 ### Unsupervised anomaly detection
 
-No dataset here has a "healthy" class — every image is of damage. So clean
+No dataset here has a "healthy" class - every image is of damage. So clean
 training data is **harvested**: defect boxes cover only ~8.4% of each labelled
 image, and the training script keeps only patches overlapping no defect box
 (plus a 16 px safety margin, because labels are drawn tight and cracks run past
@@ -153,7 +153,7 @@ against.
 
 ![Anomaly heatmap: input, reconstruction-error heatmap, and detected regions](docs/images/anomaly-heatmap.png)
 
-*Left: input. Middle: per-pixel reconstruction error — the crack is the hot red
+*Left: input. Middle: per-pixel reconstruction error - the crack is the hot red
 line. Right: green is the human label, magenta is what the autoencoder found
 without ever being shown a defect.*
 
@@ -163,7 +163,7 @@ localiser.
 
 ### Throughput
 
-~1.8–2.0 s per 640×640 frame (≈0.5 FPS) with detection and dimensioning
+~1.8-2.0 s per 640×640 frame (≈0.5 FPS) with detection and dimensioning
 enabled, on a CPU-only laptop. There is no GPU measurement in this repository.
 
 ---
@@ -181,7 +181,7 @@ venv\Scripts\activate           # Windows
 pip install -r requirements.txt
 ```
 
-`opencv-contrib-python` is required — `cv2.aruco` is not in the base
+`opencv-contrib-python` is required - `cv2.aruco` is not in the base
 `opencv-python` package.
 
 ### Windows console encoding
@@ -191,7 +191,7 @@ set PYTHONIOENCODING=utf-8      # without it, console output can die on encoding
 ```
 
 Optionally, `set INSPECT_AR_NO_BLIP=1` skips captioning entirely. It is not
-required — BLIP checks available memory and stands itself down when there is
+required - BLIP checks available memory and stands itself down when there is
 too little, rather than crashing.
 
 ### Model weights
@@ -270,7 +270,7 @@ curl -F "file=@panel.jpg" -F "heatmap=1" http://127.0.0.1:5000/api/anomaly
 ```
 
 The server binds to loopback only. Set `INSPECT_AR_HOST=0.0.0.0` to expose it,
-and do not combine that with `INSPECT_AR_DEBUG=1` — the Werkzeug debugger
+and do not combine that with `INSPECT_AR_DEBUG=1` - the Werkzeug debugger
 executes arbitrary code from the browser.
 
 ### Training the autoencoder
@@ -308,23 +308,23 @@ line references in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
       shipped checkpoint (the collision fix and class-aware metric are written
       and tested; only the training run remains)
 - [ ] Fine-tune BLIP on damage descriptions so captions are about the defect
-- [ ] OCR for part traceability — read serial numbers and stencilled IDs so
+- [ ] OCR for part traceability - read serial numbers and stencilled IDs so
       every detection is logged against the component it belongs to
 - [ ] UAV-mounted capture
-- [ ] Explore non-destructive testing modalities for subsurface inspection —
+- [ ] Explore non-destructive testing modalities for subsurface inspection -
       ultrasonic, eddy-current, thermography, borescope
 
 ---
 
 ## Team
 
-**Team Zenith** — KJ Somaiya College of Engineering
+**Team Zenith** - KJ Somaiya College of Engineering
 
 | Member | GitHub |
 |---|---|
 | Yashasvi Gupta | [@Yashvi2874](https://github.com/Yashvi2874) |
 | Aastha Shah | [@aasthans-2508](https://github.com/aasthans-2508) |
-| Sai Parcha | — |
+| Sai Parcha | - |
 
 Mentors: **Dr. Shailesh Nikam** and **Mr. Kaustubh Kulkarni**, for guidance on
 system architecture, backend structuring, ArUco integration and model
@@ -336,15 +336,15 @@ Thanks to **HAL** and **IIIT Dharwad** for the platform.
 
 ## Acknowledgements
 
-- **YOLOv8** — [Ultralytics](https://github.com/ultralytics/ultralytics).
+- **YOLOv8** - [Ultralytics](https://github.com/ultralytics/ultralytics).
   Licensed **AGPL-3.0**, which is more restrictive than this project's MIT
   licence; if you redistribute a work that imports it, that licence governs.
-- **Faster R-CNN, ResNet50-FPN** — [torchvision](https://github.com/pytorch/vision)
-- **BLIP** — [Salesforce Research](https://github.com/salesforce/BLIP)
-- **ArUco** — [OpenCV](https://docs.opencv.org/)
-- **Damage datasets** — Roboflow Universe aircraft-skin-defect exports,
+- **Faster R-CNN, ResNet50-FPN** - [torchvision](https://github.com/pytorch/vision)
+- **BLIP** - [Salesforce Research](https://github.com/salesforce/BLIP)
+- **ArUco** - [OpenCV](https://docs.opencv.org/)
+- **Damage datasets** - Roboflow Universe aircraft-skin-defect exports,
   published under **CC BY 4.0**, which requires attribution.
-- **Training notebooks** — the VGG16 and BLIP notebooks this project's early
+- **Training notebooks** - the VGG16 and BLIP notebooks this project's early
   wrappers were derived from originate as **IBM Skills Network** guided-lab
   material, obtained via
   [asitdave/Aircraft-Defect-Detection-and-Automated-Image-Captioning](https://github.com/asitdave/Aircraft-Defect-Detection-and-Automated-Image-Captioning).
@@ -356,7 +356,7 @@ Thanks to **HAL** and **IIIT Dharwad** for the platform.
 
 ## License
 
-**MIT** — see [LICENSE](LICENSE). This covers the original code of this project
+**MIT** - see [LICENSE](LICENSE). This covers the original code of this project
 (`backend/` and `docs/`).
 
 It does **not** cover third-party components, which carry their own terms:
