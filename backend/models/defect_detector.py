@@ -92,6 +92,17 @@ def _freeze_batchnorm(module: torch.nn.Module) -> torch.nn.Module:
     return module
 
 
+def _head_width(state_dict, default: int = NUM_CLASSES) -> int:
+    """Read the classifier head's width straight from the saved weights.
+
+    Sizing the model from the file rather than from a constant means a
+    checkpoint with a different number of classes loads instead of raising a
+    shape mismatch.
+    """
+    weight = state_dict.get("roi_heads.box_predictor.cls_score.weight")
+    return int(weight.shape[0]) if weight is not None else default
+
+
 def build_defect_model(num_classes: int = NUM_CLASSES) -> torch.nn.Module:
     """
     Rebuild the exact architecture used during training.
@@ -134,18 +145,17 @@ class DefectDetector:
         """
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.score_threshold = score_threshold
-        self.class_names = dict(CLASS_NAMES)
 
         checkpoint_path = Path(checkpoint_path or DEFAULT_CHECKPOINT)
         if not checkpoint_path.is_file():
             raise FileNotFoundError(
                 f"Defect checkpoint not found: {checkpoint_path}\n"
-                "It is gitignored (*.pth). Copy it from "
-                "defects_3dataset/checkpoints/best_model.zip."
+                "It is gitignored (*.pth). Train one with "
+                "backend/training/train_detector.py, or copy your own."
             )
 
-        self.model = build_defect_model(num_classes)
-
+        # Read the checkpoint BEFORE building the model, so the head is sized
+        # from what the file actually contains rather than from a constant.
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             state_dict = checkpoint["model_state_dict"]
@@ -156,6 +166,23 @@ class DefectDetector:
             self.epoch = None
             self.f1 = None
 
+        # Checkpoints from train_detector.py carry their own class_names, so
+        # nothing has to guess what index 3 means. The original 8-class
+        # checkpoint does not, and falls back to the legacy colliding map.
+        saved_names = checkpoint.get("class_names") if isinstance(checkpoint, dict) else None
+        if saved_names:
+            self.class_names = {i: n for i, n in enumerate(saved_names)}
+            num_classes = checkpoint.get("num_classes", len(saved_names))
+            self.untrained_ids = frozenset()
+            self.self_describing = True
+        else:
+            self.class_names = dict(CLASS_NAMES)
+            num_classes = _head_width(state_dict, num_classes)
+            self.untrained_ids = UNTRAINED_CLASS_IDS
+            self.self_describing = False
+
+        self.model = build_defect_model(num_classes)
+
         # strict=True on purpose. A silent partial load is what made every
         # previous prediction noise; a mismatch must be loud.
         self.model.load_state_dict(state_dict, strict=True)
@@ -164,11 +191,22 @@ class DefectDetector:
 
         print(f"[ok] Defect detector loaded: {checkpoint_path.name}")
         print(f"     Architecture: Faster R-CNN ResNet50-FPN, {num_classes} classes")
-        if self.epoch is not None:
-            # Note: this f1 was computed class-agnostically by the training
-            # script (boxes matched by IoU, labels never compared), so it
-            # measures localisation only.
-            print(f"     Trained to epoch {self.epoch}, localisation f1 {self.f1:.4f}")
+        if self.self_describing:
+            # Written by train_detector.py, whose f1 compares labels as well as
+            # boxes, so the number means what it appears to mean.
+            if self.epoch is not None:
+                print(f"     Trained to epoch {self.epoch}, class-aware f1 {self.f1:.4f}")
+            print(f"     Classes: {', '.join(list(self.class_names.values())[1:])}")
+        else:
+            # Legacy checkpoint. Its f1 was computed class-agnostically -- boxes
+            # matched by IoU, labels never compared -- so it measures
+            # localisation only, and two of its classes were never trained.
+            if self.epoch is not None:
+                print(f"     Trained to epoch {self.epoch}, localisation f1 {self.f1:.4f}")
+            print("     [warn] Legacy label space: class 1 merges 'crack' and "
+                  "'defect', and classes 6-7 were never trained.")
+            print("     [warn] Retrain with backend/training/train_detector.py "
+                  "for trustworthy labels.")
         print(f"     Device: {self.device}")
 
     # --------------------------------------------------
@@ -219,7 +257,7 @@ class DefectDetector:
                 "area": (x2 - x1) * (y2 - y1),
                 # Flag rather than drop: the caller decides what to do with a
                 # prediction from a head that saw no training data.
-                "untrained_class": class_id in UNTRAINED_CLASS_IDS,
+                "untrained_class": class_id in self.untrained_ids,
             })
 
         results.sort(key=lambda d: d["confidence"], reverse=True)

@@ -122,7 +122,39 @@ reproduce it. Two further issues are real and worth stating:
 In practice it is a strong *region proposer* on aircraft skin and a weak
 *classifier*. It also boxes rivets and fasteners as damage.
 
-**The cause is fixed, the retrain is not.**
+**Retrained, and the difference is measurable.**
+`backend/training/train_detector.py` was run for 5 epochs on an RTX 4070
+Laptop, producing `detector_remapped.pth` with a 7-class label space:
+
+| Class | Precision | Recall | F1 |
+|---|---|---|---|
+| missing-head | 0.931 | 1.000 | 0.964 |
+| crack | 0.975 | 0.907 | 0.940 |
+| dent | 0.793 | 1.000 | 0.885 |
+| scratch | 0.857 | 0.857 | 0.857 |
+| paint-off | 0.613 | 0.760 | 0.679 |
+| defect | 0.629 | 0.676 | 0.651 |
+
+Overall **class-aware F1 0.765**, against class-agnostic 0.772. That gap of
+0.007 is the result worth reading: the old checkpoint recorded 0.642
+class-agnostic while measuring **0.000** class-aware, meaning it drew boxes in
+roughly the right places and labelled them meaninglessly. This one names what
+it finds. `crack` and `defect` are now separate classes rather than one
+colliding index.
+
+![Old detector boxing rivets as cracks, beside the retrained one](docs/images/detector-comparison.png)
+
+*The same frame through both. Left: the shipped 8-class checkpoint puts twelve
+boxes on rivets and calls each one `crack_or_defect` at up to 0.98. Right: the
+retrained model no longer mistakes fasteners for damage.*
+
+Five epochs is a short run and it under-detects compared to the old one, so
+`best_model.pth` remains the default until a longer run is validated. Load the
+new one explicitly with
+`DefectDetector(checkpoint_path="models/detector_remapped.pth")`; the loader
+reads the class map from whichever checkpoint it is given.
+
+**The remaining detail.**
 `backend/training/train_detector.py` maps every dataset into one shared 7-class
 space so the generic "defect" stays separate from "crack", sizes the head from
 that space so no class goes untrained, scores class-aware metrics, and saves
