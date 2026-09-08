@@ -56,7 +56,18 @@ class ArucoCalibrator:
                 side_len = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
                 side_lengths.append(side_len)
             
-            avg_side_length = np.mean(side_lengths)
+            # Median, not mean, to match industrial_measurement.py and because
+            # it is never worse here. The four sides of a square marker should
+            # be equal, so a wrong side length is a detection error.
+            #
+            # With four values the median is the average of the middle two, so
+            # when a corner shifts diagonally and distorts two sides equally
+            # the two measures agree exactly. The difference appears when ONE
+            # side is wrong -- a corner sliding along an edge, or an edge partly
+            # occluded. Measured on a synthetic 100 px marker declared 50 mm:
+            # one side 60% long gives 13.04% error with mean and 0.00% with
+            # median.
+            avg_side_length = np.median(side_lengths)
             pixel_to_mm_ratio = marker_size_mm / avg_side_length
             
             return {
