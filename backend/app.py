@@ -19,6 +19,7 @@ Endpoints
     POST /api/calibrate  image -> px-to-mm ratio from an ArUco marker
     POST /api/analyze    image -> damage detections (+ dimensions if calibrated)
     POST /api/anomaly    image -> unsupervised anomaly regions + heatmap
+    POST /api/text       image -> serial/part numbers read off the component
     GET  /api/models     which checkpoints are present on disk
 
 Every endpoint takes a multipart upload under the field name `file`.
@@ -59,6 +60,7 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "tiff", "webp"}
 # 165 MB checkpoint has been read from disk.
 _pipeline = None
 _anomaly = None
+_text_reader = None
 _calibrator = ArucoCalibrator()
 
 
@@ -78,6 +80,15 @@ def get_pipeline():
             use_dimensions=True,
         )
     return _pipeline
+
+
+def get_text_reader():
+    """OCR for part markings. Loaded on first use; weights are ~64 MB."""
+    global _text_reader
+    if _text_reader is None:
+        from models.text_reader import TextReader
+        _text_reader = TextReader()
+    return _text_reader
 
 
 def get_anomaly_detector():
@@ -174,6 +185,7 @@ def health_check():
         "loaded": {
             "pipeline": _pipeline is not None,
             "anomaly": _anomaly is not None,
+            "text_reader": _text_reader is not None,
         },
     })
 
@@ -343,6 +355,57 @@ def detect_anomaly():
         return jsonify(response)
 
     except FileNotFoundError as e:
+        return jsonify({"success": False, "error": str(e)}), 503
+    except Exception as e:
+        return jsonify({"success": False, "error": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/api/text", methods=["POST"])
+def read_text():
+    """
+    Read serial numbers, part numbers and labels stamped on a component.
+
+    A defect report is only actionable if it names the part it was found on.
+    This reads that identifier straight off the airframe.
+
+    Optional form fields:
+        serials_only  "1" to return only strings that look like part numbers
+        annotate      "1" to include a base64 JPEG with the reads boxed
+    """
+    image, error, status = read_upload()
+    if error:
+        return jsonify(error), status
+
+    try:
+        started = time.time()
+        reader = get_text_reader()
+        results = reader.read(image)
+
+        if request.form.get("serials_only") == "1":
+            results = [r for r in results if r["looks_like_serial"]]
+
+        response = {
+            "success": True,
+            "count": len(results),
+            "results": [
+                {
+                    "text": r["text"],
+                    "confidence": r["confidence"],
+                    "bbox": [round(v, 1) for v in r["bbox"]],
+                    "looks_like_serial": r["looks_like_serial"],
+                }
+                for r in results
+            ],
+            "serials": [r["text"] for r in results if r["looks_like_serial"]],
+            "processing_time_s": round(time.time() - started, 3),
+        }
+
+        if request.form.get("annotate") == "1":
+            response["annotated_jpeg_base64"] = encode_jpeg(reader.draw(image, results))
+
+        return jsonify(response)
+
+    except ImportError as e:
         return jsonify({"success": False, "error": str(e)}), 503
     except Exception as e:
         return jsonify({"success": False, "error": f"{type(e).__name__}: {e}"}), 500

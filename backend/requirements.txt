@@ -15,6 +15,9 @@ transformers>=4.38.0
 # Memory preflight before loading BLIP
 psutil>=5.9.0
 
+# OCR for reading part and serial numbers (models/text_reader.py)
+easyocr>=1.7.0
+
 # HTTP API (backend/app.py)
 flask>=3.0.0
 flask-cors>=4.0.0

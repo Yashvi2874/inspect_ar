@@ -179,7 +179,8 @@ def test_real_time_video():
     
     # Open video source (0 = webcam)
     print("📹 Opening video source (webcam)...")
-    cap = cv2.VideoCapture(0)
+    from utils.video_source import open_capture
+    cap = open_capture()
     
     if not cap.isOpened():
         print("⚠️ Could not open webcam. Skipping real-time test.")

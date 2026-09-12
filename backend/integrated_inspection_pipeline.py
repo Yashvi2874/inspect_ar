@@ -48,7 +48,8 @@ class IntegratedInspectionPipeline:
         use_yolo: bool = False,
         use_vgg16: bool = False,
         use_blip: bool = True,
-        use_dimensions: bool = True
+        use_dimensions: bool = True,
+        use_text_reader: bool = False
     ):
         """
         Initialize the integrated pipeline.
@@ -67,6 +68,10 @@ class IntegratedInspectionPipeline:
                 would classify using a randomly initialised head.
             use_blip: Enable BLIP captioning.
             use_dimensions: Enable dimension measurement.
+            use_text_reader: Read serial and part numbers stamped on the
+                component, so a finding can be tied to the part it was found
+                on. Off by default because it downloads OCR weights (~64 MB)
+                on first use and adds roughly a second per frame.
         """
         self.models_folder = Path(models_folder) if models_folder else BACKEND_DIR / "models"
 
@@ -124,6 +129,20 @@ class IntegratedInspectionPipeline:
                 self.blip_captioner = None
         else:
             self.blip_captioner = None
+
+        # Text reader for part traceability
+        if use_text_reader:
+            print("  Loading OCR text reader...")
+            # Imported here, not at module scope, because it pulls in easyocr
+            # and its weights, and the stage is off by default.
+            try:
+                from models.text_reader import TextReader
+                self.text_reader = TextReader()
+            except Exception as e:
+                print(f"  [warn] Text reader unavailable: {e}")
+                self.text_reader = None
+        else:
+            self.text_reader = None
 
         # Initialize dimension detector
         if use_dimensions:
@@ -213,6 +232,7 @@ class IntegratedInspectionPipeline:
             "defects": {},
             "captions": {},
             "dimensions": {},
+            "text": {},
             "processing_time": 0
         }
         
@@ -269,6 +289,15 @@ class IntegratedInspectionPipeline:
             caption_results = self.blip_captioner.process_detections(processed_frame, detections)
             results["captions"] = caption_results.get("captions", {})
             print(f"   Generated captions for {len(results['captions'])} objects")
+
+        # Step 3b: Read part markings near each detection
+        if self.text_reader is not None:
+            print("Step 3b: Reading component markings (OCR)...")
+            text_results = self.text_reader.read_near_detections(frame, detections)
+            results["text"] = text_results.get("objects", {})
+            found = sum(len(v.get("serials", [])) for v in results["text"].values())
+            print(f"   Read text near {len(results['text'])} objects, "
+                  f"{found} look like part numbers")
 
         # Step 4: Dimension Measurement
         if self.dimension_detector is not None and self.pixel_to_mm_ratio is not None:

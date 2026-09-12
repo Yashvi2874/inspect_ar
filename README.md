@@ -58,7 +58,9 @@ with the commands in [Running](#running).
 | Faster R-CNN damage detector | **Working** | Real trained weights; localises well, class labels are unreliable - see [Results](#results) |
 | Anomaly autoencoder + heatmap | **Working** | Unsupervised; defect regions score 1.7× clean skin |
 | Integrated pipeline | **Working** | ~1.8-2.0 s per 640×640 frame, CPU-only |
-| HTTP API | **Working** | 5 endpoints, `backend/app.py` |
+| HTTP API | **Working** | 6 endpoints, `backend/app.py` |
+| OCR part traceability | **Working** | Reads serial and part numbers off the component so a finding names the part it was found on |
+| Phone / network camera | **Working** | Set `INSPECT_AR_SOURCE` to a stream URL to inspect from a phone instead of the laptop webcam |
 | Dimension measurement | **Working** | Polarity-aware thresholding: 0.3% / 0.6% error on both dark-on-light and bright-on-dark |
 | BLIP captioning | **Working** | Needs ~2 GB free RAM; skips itself cleanly below that. Captions are generic - the model is not fine-tuned on damage |
 | VGG16 classifier | **Legacy, off by default** | No trained Keras checkpoint exists anywhere in the project |
@@ -272,6 +274,33 @@ from industrial_measurement import compute_pixel_to_mm_ratio
 ratio, _ = compute_pixel_to_mm_ratio(marker_corners, known_size_mm=47.0)
 ```
 
+### Inspecting from a phone instead of the laptop webcam
+
+Every entry point reads `INSPECT_AR_SOURCE`. Leave it unset for the local
+webcam, or point it at an IP-camera app on a phone:
+
+```bash
+set INSPECT_AR_SOURCE=http://192.168.1.5:8080/video
+python industrial_measurement.py
+```
+
+A phone can be walked around an airframe and held at an angle, which a fixed
+laptop webcam cannot. It also accepts a video file path, which is useful for
+reproducing a run.
+
+### Reading part and serial numbers
+
+```bash
+curl -F "file=@panel.jpg" -F "annotate=1" http://127.0.0.1:5000/api/text
+```
+
+![OCR reading part markings: identifiers in green, other text in amber](docs/images/ocr-demo.png)
+
+*Green is a part or serial number, amber is other text. The distinction matters:
+`INSPECT BEFORE FLIGHT` is stencilled on the panel too, and an early version of
+the classifier reported it as a part number because it is uppercase with
+separators. A real identifier contains a digit.*
+
 ### Integrated pipeline
 
 ```bash
@@ -294,6 +323,7 @@ python backend/app.py           # http://127.0.0.1:5000
 | `/api/calibrate` | POST | Image → pixel-to-mm ratio from an ArUco marker |
 | `/api/analyze` | POST | Image → damage detections, plus dimensions when calibrated |
 | `/api/anomaly` | POST | Image → unsupervised anomaly regions and heatmap |
+| `/api/text` | POST | Image → serial and part numbers read off the component |
 
 All uploads use the multipart field name `file`.
 
@@ -348,8 +378,8 @@ line references in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 - [ ] Address the class imbalance before trusting per-class numbers - weighted
       sampling, or more `scratch` data
 - [ ] Fine-tune BLIP on damage descriptions so captions are about the defect
-- [ ] OCR for part traceability - read serial numbers and stencilled IDs so
-      every detection is logged against the component it belongs to
+- [x] OCR for part traceability. Suggested by the judges at HAL AEROTHON '26,
+      now implemented in `backend/models/text_reader.py`
 - [ ] UAV-mounted capture
 - [ ] Explore non-destructive testing modalities for subsurface inspection -
       ultrasonic, eddy-current, thermography, borescope

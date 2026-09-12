@@ -14,6 +14,7 @@ import sys
 # Add models directory to path
 sys.path.append(str(Path(__file__).parent))
 from models.yolo_detector import YOLODetector
+from utils.video_source import open_capture
 
 # ArUco dictionaries
 ARUCO_DICTS = {
@@ -1007,15 +1008,15 @@ def main():
     print(f"Selected marker size: {KNOWN_MARKER_SIZE_MM}x{KNOWN_MARKER_SIZE_MM}mm")
     print(f"Selected dictionary: {dict_name}")
     calibrate_camera_intrinsics()  # Show calibration guide
-    print("Initializing webcam with pose estimation enabled...")
-    cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        print("Error: Could not open webcam")
+    print("Initializing camera with pose estimation enabled...")
+    # Accepts a local camera, a phone streaming over the network, or a video
+    # file. Point it at a phone without touching this code:
+    #     set INSPECT_AR_SOURCE=http://192.168.1.5:8080/video
+    try:
+        cap = open_capture()
+    except RuntimeError as e:
+        print(f"Error: {e}")
         exit(1)
-
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     print("INSPECT-AR - FROM MANUAL INSPECTIONS TO AI INSPECTOR")
     print("Controls: 'q' - Quit, 's' - Save screenshot, 'c' - Contrast, 'r' - Reset, 'u' - Unlock, 'f' - Freeze")
